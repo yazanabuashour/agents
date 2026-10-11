@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/vercel-labs/agent-browser",
+  "commit": "44af39842650f0bb9c1afb7354df9a82921d4f09",
+  "package": "agent-browser@0.39.0",
+  "license": "Apache-2.0",
+  "files": {
+    "SKILL.md": {
+      "source": "skills/agent-browser/SKILL.md",
+      "sha256": "3a7520e64de2dfaa516b6721c001e84e06e3c06a187b82af029ae721540ebfac",
+      "adapted": true,
+      "reason": "Trimmed discovery guidance, retained version-matched CLI documentation, and added personal browser ownership and authentication policy."
+    }
+  }
+}
