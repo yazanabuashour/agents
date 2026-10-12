@@ -1,5 +1,14 @@
 # Profile and workflow reference
 
+## Ownership
+
+This profile owns instructions, skills, and helpers usable from any harness,
+including browser policy and technical writing. Calling Pi does not decide
+ownership: checkpoint review belongs here; resources that depend on Pi's runtime
+or interfaces belong in the [Pi package](https://github.com/yazanabuashour/pi).
+Neither repository requires the other or manages accounts, browser profiles, or
+machine settings. Upstream tools own their CLI guides and implementations.
+
 ## Load instructions and skills
 
 | Source | Installed path | Purpose |
@@ -13,8 +22,7 @@ exported baseline. The installer copies only its source files and owns neither
 whole skills directories nor runtime configuration. Application-owned skills keep
 their original installers and version requirements.
 
-Technical writing is hidden from automatic model selection by Pi/Claude frontmatter
-and Codex's `agents/openai.yaml`. Invoke it explicitly:
+Technical writing is manual-only in Pi, Claude Code, and Codex. Invoke it explicitly:
 
 | Agent | Command |
 | --- | --- |
@@ -35,10 +43,9 @@ provide missing tools, or enforce model behavior.
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
 | `technical-writing` | No executable workflow dependency |
 
-Configure and authenticate tools outside this repository. The browser skill loads
-version-matched guidance through `agent-browser skills get core`; its profile,
-credential-store, and session-ownership requirements live in the skill rather than
-a copied CLI manual.
+Configure and authenticate tools outside this repository. Follow the
+[browser skill](../skills/agent-browser/SKILL.md) for profile and session policy;
+`agent-browser skills get core` supplies guidance for the installed CLI version.
 
 ## Select a checkpoint-review model
 
@@ -47,7 +54,6 @@ Set `REVIEW_MODEL` to an available Pi `provider/model-id` before running
 helper; that helper and its local configuration are not distributed here. Users
 of that fallback must retain their helper and its dependencies, including jq.
 
-Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) for approved
-delta preparation, dispatch, and result handling. Another agent can invoke the
-same command, but its reviewer backend remains Pi. No personal Pi extensions are
-required: reviewers run with extensions and skills disabled.
+Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to prepare the
+approved patch, run reviewers, and handle findings. Any harness can invoke the
+command; reviewers use native Pi with extensions and skills disabled.
