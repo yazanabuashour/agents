@@ -9,10 +9,15 @@ for syntax and output options.
 - Todoist owns personal task state; calendar appointments stay separate.
 - Ranked work belongs on the Todos board; unresolved captures belong verbatim
   in Inbox. Never invent dates or schedule triggered conditions.
-- Keep durable context in canonical notes when available; link relevant notes
-  rather than duplicating task status there. Preserve supplied note URLs. If
-  notes are unavailable, retain essential context in the task and report any
-  unsaved durable context; do not invent links or create a vault.
+- Before drafting or materially rewriting a task description, explicitly read
+  [technical-writing](../technical-writing/SKILL.md) and apply its relevant prose
+  guidance. Do not force a documentation mode or remove meaningful record dates
+  or evidence. Skip this step for reads, task-state changes, and verbatim Inbox
+  captures; preserve source text.
+- Use [notes](../notes/SKILL.md) for durable context and note links rather than
+  duplicating task status in notes. Preserve supplied note URLs. If notes are
+  unavailable, retain essential context in the task and report any unsaved
+  durable context; do not invent links.
 - Resolve exact IDs before mutations. Verify writes and ordering.
 - Reconcile uncertain writes before retrying; recurring completion advances
   an occurrence.

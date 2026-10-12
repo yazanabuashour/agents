@@ -13,9 +13,12 @@ scripts/install-local
 ```
 
 Review the preview, `instructions/AGENTS.md`, and the skills you intend to use.
-Adapt personal preferences before installing, including the notes-vault path,
-Todoist board conventions, and browser-session policy. Do not add credentials,
-private account data, or machine configuration to this checkout.
+Adapt personal preferences before installing, including notes checkout access,
+Todoist board conventions, and browser-session policy. If you want remote note
+submission, explicitly authorize its workflow in your setup instructions; access
+alone does not authorize remote writes. Keep the procedure in the notes
+repository. Do not add credentials, private account data, or machine configuration
+to this checkout.
 
 Install the reviewed files:
 
@@ -57,7 +60,7 @@ Claude does not discover instructions under `~/.agents`. No `CLAUDE.md` alias is
 needed. Use a Claude Code version with native `AGENTS.md` support.
 
 Start new sessions and confirm that the personal baseline, repository instructions,
-and intended skills load. Technical writing stays manual-only; see
+and intended skills load. Technical writing is eligible for automatic use; see
 [loading behavior](reference.md#load-instructions-and-skills).
 
 ## Update

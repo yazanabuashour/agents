@@ -9,5 +9,7 @@
 - Follow [development checks](docs/development.md) and the
   [installation preview](docs/install.md). Verify installed copies without
   reloading existing sessions.
-- Preserve skill attribution and manual-only invocation across supported agents.
+- Preserve skill attribution and declared invocation policies across supported
+  agents. Technical writing is eligible for automatic use; keep unrelated
+  manual-only skills manual-only. Skill descriptions state only when to use them.
   Declare actual runtime dependencies rather than claiming backend independence.

@@ -1,6 +1,6 @@
 ---
 name: agent-browser
-description: Use for browser automation, screenshots, extraction, web-app testing, Electron interaction, and cloud-browser workflows; also when standard web search or retrieval fails or misses content. Prefer agent-browser for browser interaction, not over working search/fetch tools.
+description: Use for browser automation, screenshots, extraction, web-app testing, Electron interaction, and cloud-browser workflows; also when standard web search or retrieval fails or misses content.
 compatibility: Requires stock agent-browser CLI configured with the personal profile and pinned tabs.
 ---
 
@@ -29,6 +29,7 @@ For specialized tasks, use `agent-browser skills list`, then
 
 ## Research and interaction
 
+Prefer agent-browser for browser interaction, not over working search/fetch tools.
 When search/fetch tools fail or return incomplete content, continue
 research through browser search and rendered-page retrieval. Use headed browsing
 or an existing Chrome DevTools Protocol (CDP) session when visibility or human

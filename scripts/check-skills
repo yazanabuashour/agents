@@ -18,6 +18,8 @@ for skill in sorted((root / "skills").iterdir()):
     description = metadata.get("description")
     if not isinstance(description, str) or not description.strip():
         raise SystemExit(f"Missing skill description: {path}")
+    if not re.match(r"^(Use when|Use for|REQUIRED when)\b", description):
+        raise SystemExit(f"Skill description must state when to use it: {path}")
     for source in skill.rglob("*"):
         if source.is_symlink():
             raise SystemExit(f"Do not vendor source symlinks: {source}")
@@ -30,8 +32,9 @@ baseline = (root / "instructions/AGENTS.md").read_text()
 if re.search(r"Todoist|agent-browser|~/notes", baseline):
     raise SystemExit("Conditional personal workflows must stay out of the baseline.")
 writing = root / "skills/technical-writing"
-if "disable-model-invocation: true" not in (writing / "SKILL.md").read_text():
-    raise SystemExit("Technical writing must remain manual-only in Pi and Claude Code.")
-if yaml.safe_load((writing / "agents/openai.yaml").read_text()) != {"policy": {"allow_implicit_invocation": False}}:
-    raise SystemExit("Technical writing must remain manual-only in Codex.")
+writing_metadata = yaml.safe_load((writing / "SKILL.md").read_text().split("---", 2)[1])
+if writing_metadata.get("disable-model-invocation", False) is not False:
+    raise SystemExit("Technical writing must allow automatic use in Pi and Claude Code.")
+if yaml.safe_load((writing / "agents/openai.yaml").read_text()) != {"policy": {"allow_implicit_invocation": True}}:
+    raise SystemExit("Technical writing must allow automatic use in Codex.")
 print("Personal skill checks passed.")

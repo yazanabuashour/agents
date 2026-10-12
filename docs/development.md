@@ -20,9 +20,12 @@ CI runs the same command, never installation into a real user profile.
 
 For installation or discovery changes, use a disposable home and configuration
 directories. Check the exported baseline and skill files, loading-link targets,
-application-owned entries, and manual-only technical-writing invocation. Run
-native-agent checks without real accounts or workflow writes; do not infer loading
-from an assistant's claim that it read a file.
+application-owned entries, and automatic technical-writing eligibility. Verify
+that notes and Todoist load the sibling writing skill for drafted or materially
+rewritten prose, not reads, state changes, or verbatim captures. Preserve unrelated
+manual-only invocation policies. Keep skill descriptions limited to triggers.
+Run native-agent checks without real accounts or workflow writes; do not infer
+loading from an assistant's claim that it read a file.
 
 Keep private prompts, transcripts, credentials, account state, and verification
 receipts outside the repository. Record passed, failed, or unavailable gates in

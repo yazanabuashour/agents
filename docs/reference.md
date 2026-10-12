@@ -22,7 +22,10 @@ exported baseline. The installer copies only its source files and owns neither
 whole skills directories nor runtime configuration. Application-owned skills keep
 their original installers and version requirements.
 
-Technical writing is manual-only in Pi, Claude Code, and Codex. Invoke it explicitly:
+Technical writing is eligible for automatic use in Pi, Claude Code, and Codex
+when drafting or materially rewriting technical prose, including durable notes
+and task descriptions. The notes and Todoist skills explicitly load it for those
+writes, not reads, state changes, or verbatim captures. You can also invoke it:
 
 | Agent | Command |
 | --- | --- |
@@ -37,11 +40,14 @@ provide missing tools, or enforce model behavior.
 
 | Skill | Required environment |
 | --- | --- |
-| `notes` | Your existing Markdown vault, defaulting to `~/notes` |
+| `notes` | Existing `~/notes` checkout preferred; Git or private GitHub access with existing authentication for authorized remote work |
 | `todoist` | Authenticated stock `td` CLI; consult its command help |
 | `agent-browser` | Stock CLI, personal persistent-profile configuration, pinned tabs, and an available credential store |
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
 | `technical-writing` | No executable workflow dependency |
+
+See the [notes skill](../skills/notes/SKILL.md) for canonical repository access,
+submission authorization, and persistence reporting.
 
 Configure and authenticate tools outside this repository. Follow the
 [browser skill](../skills/agent-browser/SKILL.md) for profile and session policy;

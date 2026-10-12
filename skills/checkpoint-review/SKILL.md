@@ -1,6 +1,6 @@
 ---
 name: checkpoint-review
-description: REQUIRED when checkpoint review is approved or required. Reviews an explicit source delta against task decisions, freezes the worktree, and waits for findings before commit.
+description: REQUIRED when checkpoint review is approved or required.
 compatibility: Linux; requires the global checkpoint-review command.
 ---
 
