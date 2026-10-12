@@ -14,10 +14,10 @@ for syntax and output options.
   guidance. Do not force a documentation mode or remove meaningful record dates
   or evidence. Skip this step for reads, task-state changes, and verbatim Inbox
   captures; preserve source text.
-- Use [notes](../notes/SKILL.md) for durable context and note links rather than
-  duplicating task status in notes. Preserve supplied note URLs. If notes are
-  unavailable, retain essential context in the task and report any unsaved
-  durable context; do not invent links.
+- Use [notes](../notes/SKILL.md) for durable context and information. Link Todoist
+  tasks to relevant notes for supporting context; keep task status in Todoist.
+  Preserve supplied note URLs. If notes are unavailable, retain essential context
+  in the task and report any unsaved durable context; do not invent links.
 - Resolve exact IDs before mutations. Verify writes and ordering.
 - Reconcile uncertain writes before retrying; recurring completion advances
   an occurrence.
