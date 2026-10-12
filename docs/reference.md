@@ -32,7 +32,6 @@ provide missing tools, or enforce model behavior.
 | `notes` | Your existing Markdown vault, defaulting to `~/notes` |
 | `todoist` | Authenticated stock `td` CLI; consult its command help |
 | `agent-browser` | Stock CLI, personal persistent-profile configuration, pinned tabs, and an available credential store |
-| `browser-resilience` | Available research tools and the browser skill when browser interaction is needed |
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
 | `technical-writing` | No executable workflow dependency |
 

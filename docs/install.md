@@ -40,7 +40,7 @@ ln -sT ../../.agents/AGENTS.md "$HOME/.pi/agent/AGENTS.md"
 ln -sT ../.agents/AGENTS.md "$HOME/.codex/AGENTS.md"
 ln -sT ../../.agents/AGENTS.md "$HOME/.claude/rules/personal.md"
 
-for skill in agent-browser browser-resilience checkpoint-review notes technical-writing todoist; do
+for skill in agent-browser checkpoint-review notes technical-writing todoist; do
   ln -sT "../../.agents/skills/$skill" "$HOME/.claude/skills/$skill"
 done
 ```
