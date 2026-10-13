@@ -1,6 +1,6 @@
 # Install the profile
 
-Use Linux, Git, and Python 3. Install and authenticate each agent through its own
+Use Linux, Git, and Python 3.9+. Install and authenticate each agent through its own
 setup process; this profile does neither. You do not need the personal Pi extension
 package to load the instructions and skills.
 

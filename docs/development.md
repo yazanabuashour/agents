@@ -2,7 +2,7 @@
 
 ## Set up and check
 
-Use Linux with Python 3, PyYAML, Bash, Git, ShellCheck, shfmt, and the standard
+Use Linux with Python 3.9+, PyYAML, Bash, Git, ShellCheck, shfmt, and the standard
 process tools supplied by procps and util-linux. On Ubuntu:
 
 ```sh
@@ -11,10 +11,23 @@ sudo apt-get install --yes git python3 python3-yaml shellcheck shfmt procps util
 scripts/check
 ```
 
-The checks validate skill metadata, JSON and YAML files, shell scripts, installer
-ownership and backups, checkpoint-review behavior, and Git whitespace. Checkpoint
-tests use mock reviewers; they require no Pi account or real provider requests.
-CI runs the same command, never installation into a real user profile.
+`scripts/check` runs these gates:
+
+- `scripts/check-profile`: skill metadata, repository JSON and YAML, and local
+  inline Markdown link targets. Inspect heading fragments and external links
+  when changing them; the validator checks only local paths.
+- Bash syntax, ShellCheck, and shfmt for the shell entry points.
+- `scripts/test-install`: preview, copies, permissions, backups, repeat installs,
+  and symlink refusal in a disposable home.
+- `scripts/test-agent-mailbox`: durable discovery, reviewed and uncertain sends,
+  export integrity, and download safety with offline fixtures.
+- `scripts/test-checkpoint-review`: input validation, dispatch, worktree
+  protection, and process cleanup with mock reviewers.
+- Git whitespace checks for staged and unstaged changes.
+
+CI runs the same command. Checks need no live accounts, provider requests, or
+installation into a real user profile. Mock checkpoint tests are not checkpoint
+review; follow the baseline's review policy separately.
 
 ## Validate changed loading behavior
 

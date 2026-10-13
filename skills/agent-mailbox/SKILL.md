@@ -8,8 +8,8 @@ compatibility: Linux; Python 3.9+, official Resend CLI with Inboxes preview capa
 
 Use the official `resend` CLI for mailbox operations. Read its relevant command
 help first. Use `agent-mailbox` for durable discovery and reviewed draft sends;
-see the helper contract in `docs/agent-mailbox.md` in the source checkout.
-The helper's `--help` is available after installation. It works from any harness.
+follow the [helper guide](https://github.com/yazanabuashour/agents/blob/main/docs/agent-mailbox.md).
+Use `agent-mailbox --help` and subcommand help for syntax.
 
 ## Establish scope and access
 
@@ -61,9 +61,10 @@ The helper's `--help` is available after installation. It works from any harness
 2. Choose a stable logical action key. Run `review DRAFT_ID KEY` and inspect
    its full snapshot, including sender, recipients, both bodies, and reply IDs.
    A stored snapshot records review material; it does not grant permission.
-3. Run `send KEY --review-sha256 HASH --authorized` using that snapshot’s hash only within that authority. The helper persists
-   the intent and request key, re-fetches the native draft and sender, and rejects
-   changes. It serializes cooperating callers sharing the same state directory.
+3. Within that authority, run `send KEY --review-sha256 HASH --authorized` using
+   the inspected snapshot's hash. The helper persists the intent and request key,
+   re-fetches the native draft and sender, and rejects changes. It serializes
+   cooperating callers sharing the same state directory.
    Use one state directory per inbox/profile for all consumers.
 4. After an ambiguous result or interruption, run `reconcile KEY`. Never invent
    another key, clone the draft, or blindly repeat a send. Native sends return
@@ -88,8 +89,9 @@ deletes server mail.
 Use `run` for an authorized read/archive job, or `export --output PRIVATE_DIR`
 for a one-time export. Use `agent-mailbox verify PRIVATE_DIR` to verify local bytes.
 Optional trusted `archive_copy` config adds rsync copying; remote retention and
-restore verification belong to the host. Export only authorized mail into private storage. Traverse all requested folders,
-thread/message pages, drafts, and attachment pages. Save actual available bodies,
+restore verification belong to the host. Export only authorized mail into
+private storage. Traverse all requested folders, thread/message pages, drafts,
+and attachment pages. Save actual available bodies,
 raw MIME bytes, attachment bytes, metadata, and a SHA-256 manifest. Signed URLs
 expire and are not an archive. Verify local bytes against the manifest, and
 report missing downloads, unsupported endpoints, retention gaps, pagination

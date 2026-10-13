@@ -7,7 +7,7 @@ shell_files=(bin/checkpoint-review scripts/check scripts/test-checkpoint-review)
 for script in "${shell_files[@]}"; do bash -n "$script"; done
 shellcheck -x "${shell_files[@]}"
 shfmt -d -i 2 -ci "${shell_files[@]}"
-python3 -B scripts/check-skills
+python3 -B scripts/check-profile
 python3 -B scripts/test-install
 python3 -B scripts/test-agent-mailbox
 scripts/test-checkpoint-review
