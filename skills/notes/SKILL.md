@@ -12,8 +12,9 @@ submission instructions.
 - Save useful context as it emerges within the authorized scope, not just in
   the conversation. Task systems own task state.
 - Before drafting or materially rewriting prose, read
-  [technical-writing](../technical-writing/SKILL.md). Skip this for reads and
-  verbatim captures; preserve source text, evidence, and meaningful dates.
+  [technical-writing](../technical-writing/SKILL.md) and apply its prose guidance,
+  not documentation-only rules. Skip this for reads and verbatim captures;
+  preserve source text, evidence, and meaningful dates.
 - Preserve existing IDs and links. Return a verified note link when available;
   never invent one.
 - Remote submission requires explicit user authorization, not just access.

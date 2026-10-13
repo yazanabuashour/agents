@@ -10,10 +10,9 @@ for syntax and output options.
 - Ranked work belongs on the Todos board; unresolved captures belong verbatim
   in Inbox. Never invent dates or schedule triggered conditions.
 - Before drafting or materially rewriting a task description, explicitly read
-  [technical-writing](../technical-writing/SKILL.md) and apply its relevant prose
-  guidance. Do not force a documentation mode or remove meaningful record dates
-  or evidence. Skip this step for reads, task-state changes, and verbatim Inbox
-  captures; preserve source text.
+  [technical-writing](../technical-writing/SKILL.md) and apply its prose guidance,
+  not documentation-only rules. Preserve source text, evidence, and meaningful
+  dates. Skip this for reads, task-state changes, and verbatim Inbox captures.
 - Use [notes](../notes/SKILL.md) for durable context and information. Link Todoist
   tasks to relevant notes for supporting context; keep task status in Todoist.
   Preserve supplied note URLs. If notes are unavailable, retain essential context

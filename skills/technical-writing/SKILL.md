@@ -1,6 +1,6 @@
 ---
 name: technical-writing
-description: Use when drafting or materially rewriting technical docs, RFCs, READMEs, PR descriptions, commit messages, durable notes, or task descriptions.
+description: Use when drafting or materially rewriting technical docs, RFCs, READMEs, PR descriptions, or commit messages.
 ---
 
 # Write clear technical documentation
@@ -17,18 +17,15 @@ jargon or rename a concept to vary the prose. Define named patterns on first use
 In documentation, write only what the reader cannot get from the code, types,
 configuration, or command help: intent, constraints, procedures, and decisions.
 Link to the source of truth instead of copying versions, options, or behavior
-from it. Omit incidental dates, transient progress notes, and claims that a known
-future change will make false. Preserve meaningful record dates, decisions,
-constraints, evidence, quotations, and source text in notes and task descriptions.
-Prefer trimming or deleting existing docs to adding new ones.
+from it. Leave out dates, progress notes, and claims that a known future change
+will make false. Prefer trimming or deleting existing docs to adding new ones.
 Keep the result terse and high-yield; use lists when they carry the same meaning
 as prose.
 
 ## Pick one document mode
 
-For documentation, choose the mode by the reader's goal. Keep each document in
-one mode and link to other modes when needed. Notes, task descriptions, PR
-descriptions, and commit messages do not need a documentation mode.
+Choose the mode by the reader's goal. Keep each document in one mode and link to
+other modes when needed.
 
 - **Tutorial — learn by doing.** Open with what the learner builds. Write as
   "we", in commands. Make each step produce a visible result and say what to
@@ -104,9 +101,8 @@ guidelines fetched from the Internet Archive and SAS sample chapter, 2026-07-18.
 
 ## Check the result
 
-Apply the relevant checks to authored prose, including notes and task
-descriptions. Preserve verbatim captures and source text. The document-mode and
-code-derived-content checks apply to documentation, not records or task context.
+Apply these checks to documentation, PR descriptions, and commit messages.
+The document-mode check applies to documentation sets, not commit messages.
 For product UI text, follow the product's copy guidelines instead.
 
 1. For documentation, does each sentence say something the code, configuration,

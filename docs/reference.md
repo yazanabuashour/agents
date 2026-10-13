@@ -22,10 +22,7 @@ exported baseline. The installer copies only its source files and owns neither
 whole skills directories nor runtime configuration. Application-owned skills keep
 their original installers and version requirements.
 
-Technical writing is eligible for automatic use in Pi, Claude Code, and Codex
-when drafting or materially rewriting technical prose, including durable notes
-and task descriptions. The notes and Todoist skills explicitly load it for those
-writes, not reads, state changes, or verbatim captures. You can also invoke it:
+You can invoke technical writing directly:
 
 | Agent | Command |
 | --- | --- |
