@@ -62,3 +62,6 @@ of that fallback must retain their helper and its dependencies, including jq.
 Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to prepare the
 approved patch, run reviewers, and handle findings. Any harness can invoke the
 command; reviewers use native Pi with extensions and skills disabled.
+Git preparation trusts the checkout's Git configuration: reverse-patch checking
+can execute configured clean or process filters. This is not sandboxed by the
+reviewers' read-only tool list. Inspect untrusted Git configuration before use.

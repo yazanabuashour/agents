@@ -49,6 +49,22 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
         mutate)
           printf 'reviewer mutation %s\n' "$$" >>"$CHECKPOINT_REVIEW_TEST_REPO/unrelated.txt"
           ;;
+        mutate-hidden)
+          printf 'hidden mutation\n' >"$CHECKPOINT_REVIEW_TEST_REPO/hidden.txt"
+          ;;
+        mutate-submodule)
+          printf 'submodule mutation\n' >"$CHECKPOINT_REVIEW_TEST_REPO/sub/file.txt"
+          ;;
+        orphan-success | orphan-cancel)
+          if [[ $effort == high ]]; then
+            read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE" &
+            printf 'descendant %s\n' "$!" >"$CHECKPOINT_REVIEW_TEST_READY"
+            printf 'reviewer %s\n' "$$" >"$CHECKPOINT_REVIEW_TEST_READY"
+          elif [[ $CHECKPOINT_REVIEW_TEST_MODE == orphan-cancel ]]; then
+            printf 'sibling %s\n' "$$" >"$CHECKPOINT_REVIEW_TEST_READY"
+            read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE"
+          fi
+          ;;
         symlink-target)
           printf 'outside mutation\n' >>"$CHECKPOINT_REVIEW_TEST_OUTSIDE"
           ;;
@@ -59,6 +75,8 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
   esac
 fi
 
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG GIT_TEMPLATE_DIR
 root="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 temp_root="$(mktemp -d)"
 review_pid=''
@@ -86,7 +104,10 @@ git -C "$repo" init --quiet
 git -C "$repo" config user.email checkpoint-review-test@example.com
 git -C "$repo" config user.name 'Checkpoint Review Test'
 printf 'baseline\n' >"$repo/tracked.txt"
-git -C "$repo" add tracked.txt
+printf 'hidden baseline\n' >"$repo/hidden.txt"
+mkdir "$repo/directory"
+printf 'nested baseline\n' >"$repo/directory/file.txt"
+git -C "$repo" add tracked.txt hidden.txt directory/file.txt
 git -C "$repo" commit --quiet -m baseline
 printf 'Requirements: approved edit only.\nNon-goals: unrelated cleanup.\nPrior decision: retain earlier work.\n' >"$context"
 : >"$patch"
@@ -256,9 +277,48 @@ ln -s "$temp_root/outside" "$repo/link"
 expect_status 0 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=symlink-target \
   CHECKPOINT_REVIEW_TEST_OUTSIDE="$temp_root/outside" "$review_script" "${review_args[@]}"
 [[ ! -e $output_dir/helper-ran ]]
+mv "$repo/directory" "$temp_root/outside-directory"
+ln -s "$temp_root/outside-directory" "$repo/directory"
+expect_status 0 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=symlink-target \
+  CHECKPOINT_REVIEW_TEST_OUTSIDE="$temp_root/outside-directory/file.txt" "$review_script" "${review_args[@]}"
+[[ $(<"$temp_root/outside-directory/file.txt") == *'outside mutation'* ]]
+rm "$repo/directory"
+mv "$temp_root/outside-directory" "$repo/directory"
+printf 'nested baseline\n' >"$repo/directory/file.txt"
 expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=mutate "$review_script" "${review_args[@]}"
 summary="$(summary_path)"
 grep -F 'Worktree after:' "$summary" >/dev/null
+
+# Git visibility flags must not hide changes to tracked bytes.
+for flag in assume-unchanged skip-worktree; do
+  git -C "$repo" update-index "--$flag" hidden.txt
+  before_flags="$(git -C "$repo" ls-files -v hidden.txt)"
+  expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=mutate-hidden "$review_script" "${review_args[@]}"
+  [[ $(git -C "$repo" ls-files -v hidden.txt) == "$before_flags" ]]
+  [[ $(<"$repo/hidden.txt") == 'hidden mutation' ]]
+  git -C "$repo" update-index "--no-$flag" hidden.txt
+  printf 'hidden baseline\n' >"$repo/hidden.txt"
+done
+
+# A submodule that was already dirty must retain a content-sensitive fingerprint.
+sub_source="$temp_root/sub-source"
+sub_repo="$temp_root/sub-repo"
+for fixture in "$sub_source" "$sub_repo"; do
+  git init --quiet "$fixture"
+  git -C "$fixture" config user.email checkpoint-review-test@example.com
+  git -C "$fixture" config user.name 'Checkpoint Review Test'
+  printf 'baseline\n' >"$fixture/file.txt"
+  git -C "$fixture" add file.txt
+  git -C "$fixture" commit --quiet -m baseline
+done
+git -C "$sub_repo" -c protocol.file.allow=always submodule add --quiet "$sub_source" sub
+git -C "$sub_repo" commit --quiet -m submodule
+printf 'approved\n' >"$sub_repo/file.txt"
+git -C "$sub_repo" diff --binary --no-ext-diff --no-textconv -- file.txt >"$temp_root/sub.patch"
+printf 'earlier dirty\n' >"$sub_repo/sub/file.txt"
+expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_REPO="$sub_repo" CHECKPOINT_REVIEW_TEST_MODE=mutate-submodule \
+  "$review_script" --repo "$sub_repo" --patch "$temp_root/sub.patch" --context "$context" "${required_reviews[@]}"
+[[ $(<"$sub_repo/sub/file.txt") == 'submodule mutation' ]]
 
 # A failed reviewer cannot end the command before its sibling settles.
 mkfifo "$temp_root/ready" "$temp_root/release"
@@ -298,6 +358,35 @@ for pid in "${children[@]}"; do
   [[ -z $state || $state == Z* ]]
 done
 grep -F 'Exit status: 143' "$(summary_path)" >/dev/null
+# A completed reviewer cannot leave descendants behind on success or cancellation.
+for mode in orphan-success orphan-cancel; do
+  clear_output
+  env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE="$mode" "$review_script" "${review_args[@]}" >"$temp_root/stdout" 2>"$temp_root/stderr" &
+  review_pid=$!
+  children=()
+  leader=''
+  events=2
+  [[ $mode != orphan-cancel ]] || events=3
+  for ((i = 0; i < events; i++)); do
+    read -r -u "$ready_fd" kind pid
+    children+=("$pid")
+    [[ $kind != reviewer ]] || leader="$pid"
+  done
+  if [[ $mode == orphan-cancel ]]; then
+    tail --pid="$leader" -f /dev/null
+    kill -TERM "$review_pid"
+  fi
+  status=0
+  wait "$review_pid" || status=$?
+  review_pid=''
+  expected=0
+  [[ $mode != orphan-cancel ]] || expected=143
+  [[ $status == "$expected" ]]
+  for pid in "${children[@]}"; do
+    state="$(ps -o stat= -p "$pid" || true)"
+    [[ -z $state || $state == Z* ]]
+  done
+done
 exec {ready_fd}>&- {release_fd}>&-
 
 # Clean committed scope and unborn repositories also use the caller's patch.

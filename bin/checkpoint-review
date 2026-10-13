@@ -117,14 +117,18 @@ summary_file="$review_dir/summary.txt"
 report_file="$review_dir/report.md"
 patch_file="$review_dir/approved.patch"
 context_file="$review_dir/task-context.md"
-pids=() names=() logs=() statuses=()
+pids=() names=() logs=() statuses=() result_files=()
 failed=0
 
 settle_reviews() {
-  local i
+  local i result
   for i in "${!pids[@]}"; do
     if [[ ! ${statuses[$i]+set} ]]; then
       if wait "${pids[$i]}"; then statuses[i]=0; else statuses[i]=$?; fi
+      if [[ -f ${result_files[$i]} ]] && read -r result <"${result_files[$i]}" &&
+        [[ $result =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((result <= 255)); then
+        statuses[i]="$result"
+      fi
     fi
     if [[ ${statuses[$i]} != 0 ]]; then failed=1; fi
   done
@@ -134,7 +138,7 @@ finish() {
   local status="$?" pid i
   [[ $# == 0 ]] || status="$1"
   trap - INT TERM HUP EXIT
-  # Running/stopped jobs exclude completed jobs whose PIDs could be reused.
+  # Completed supervisors have already killed their groups; never signal reused PIDs.
   local live_pids=()
   mapfile -t live_pids < <(
     jobs -pr
@@ -158,22 +162,44 @@ trap 'finish 130' INT
 trap 'finish 143' TERM
 trap 'finish 129' HUP
 
-worktree_hash() {
-  {
-    git rev-parse --verify --quiet HEAD || [[ $? == 1 ]]
-    git status --porcelain=v1 --untracked-files=all -z
-    git diff --cached --binary --no-ext-diff --no-textconv --ignore-submodules=none --
-    git diff --binary --no-ext-diff --no-textconv --ignore-submodules=none --
-    git ls-files --others --exclude-standard -z |
-      while IFS= read -r -d '' path; do
-        printf 'untracked:%s\0' "$path"
-        if [[ -L $path ]]; then
-          readlink -z -- "$path"
-        elif [[ -f $path ]]; then
-          git hash-object --no-filters -- "$path"
+worktree_snapshot() {
+  local root="$1" path target nested_root ancestor remaining
+  git -C "$root" rev-parse --verify --quiet HEAD || [[ $? == 1 ]]
+  git -C "$root" ls-files --stage -z
+  git -C "$root" ls-files -v -z
+  git -C "$root" ls-files --cached --others --exclude-standard -z |
+    while IFS= read -r -d '' path; do
+      printf 'path:%s\0' "$path"
+      ancestor="$root"
+      remaining="$path"
+      while [[ $remaining == */* ]]; do
+        ancestor+="/${remaining%%/*}"
+        remaining="${remaining#*/}"
+        if [[ -L $ancestor ]]; then
+          printf 'symlink-ancestor:%s\0' "$ancestor"
+          readlink -z -- "$ancestor"
+          continue 2
         fi
       done
-  } | git hash-object --stdin
+      target="$root/$path"
+      if [[ -e $target || -L $target ]]; then
+        stat -c '%f' -- "$target"
+      else
+        printf 'missing\n'
+      fi
+      if [[ -L $target ]]; then
+        readlink -z -- "$target"
+      elif [[ -f $target ]]; then
+        git hash-object --no-filters -- "$target"
+      elif [[ -d $target && -e $target/.git ]]; then
+        nested_root="$(git -C "$target" rev-parse --show-toplevel)"
+        [[ $nested_root != "$(cd "$target" && pwd -P)" ]] || worktree_snapshot "$nested_root"
+      fi
+    done
+}
+
+worktree_hash() {
+  worktree_snapshot "$repo_root" | git hash-object --stdin
 }
 
 {
@@ -229,9 +255,19 @@ declare -A prompts=(
 )
 
 run_pi() {
-  # Only the parent owns cleanup, including when exec fails in this child.
   trap - INT TERM HUP EXIT
-  exec setsid pi --print --no-session --model "$REVIEW_MODEL" --thinking "$1" \
+  # shellcheck disable=SC2016
+  exec setsid bash --noprofile --norc -c '
+    set +m
+    result_file="$1"
+    shift
+    status=0
+    pi "$@" || status=$?
+    printf "%s\n" "$status" >"$result_file.tmp" && mv -- "$result_file.tmp" "$result_file"
+    # Retain the group leader until every owned group member receives cleanup.
+    kill -KILL -- "-$$"
+  ' checkpoint-review-supervisor "$3" \
+    --print --no-session --model "$REVIEW_MODEL" --thinking "$1" \
     --no-approve --no-extensions --no-skills --no-prompt-templates --tools read,grep,find \
     "@$patch_file" "@$context_file" "$2"
 }
@@ -240,9 +276,9 @@ for review_type in "${reviews[@]}"; do
   [[ $review_type != test-gaps ]] || name=test-gap-review
   log="$review_dir/$name.log"
   prompt="$review_prefix ${prompts[$review_type]}"
-  # setsid owns the reviewer process group. No stdin can widen the explicit input.
-  run_pi "${efforts[$review_type]}" "$prompt" </dev/null >"$log" 2>&1 &
-  pids+=("$!") names+=("$name") logs+=("$log")
+  result_file="$review_dir/$name.status"
+  run_pi "${efforts[$review_type]}" "$prompt" "$result_file" </dev/null >"$log" 2>&1 &
+  pids+=("$!") names+=("$name") logs+=("$log") result_files+=("$result_file")
 done
 settle_reviews
 
