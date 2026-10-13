@@ -9,7 +9,8 @@ source_root = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary) / "source"
     for directory in ("instructions", "skills", "bin"):
-        shutil.copytree(source_root / directory, root / directory, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(source_root / directory, root / directory, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     (root / "scripts").mkdir()
     shutil.copy2(source_root / "scripts/install-local", root / "scripts/install-local")
     cache = root / "bin/__pycache__"
