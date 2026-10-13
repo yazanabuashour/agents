@@ -1,7 +1,7 @@
 ---
 name: agent-mailbox
 description: Use when reading, drafting, sending, reconciling, or exporting a Resend agent mailbox.
-compatibility: Linux; Python 3, official Resend CLI with Inboxes preview capabilities, existing full-access credentials, private-beta Inboxes access, and agent-mailbox helper.
+compatibility: Linux; Python 3.9+, official Resend CLI with Inboxes preview capabilities, existing full-access credentials, private-beta Inboxes access, and agent-mailbox helper.
 ---
 
 # Work with an agent mailbox
@@ -85,7 +85,10 @@ deletes server mail.
 
 ## Preserve an export
 
-Export only authorized mail into private storage. Traverse all requested folders,
+Use `run` for an authorized read/archive job, or `export --output PRIVATE_DIR`
+for a one-time export. Use `agent-mailbox verify PRIVATE_DIR` to verify local bytes.
+Optional trusted `archive_copy` config adds rsync copying; remote retention and
+restore verification belong to the host. Export only authorized mail into private storage. Traverse all requested folders,
 thread/message pages, drafts, and attachment pages. Save actual available bodies,
 raw MIME bytes, attachment bytes, metadata, and a SHA-256 manifest. Signed URLs
 expire and are not an archive. Verify local bytes against the manifest, and

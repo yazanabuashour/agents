@@ -3,16 +3,25 @@
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
+import http.client
+import ipaddress
 import json
+import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
+import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import uuid
+import urllib.parse
 
 
 def encode(value):
@@ -73,7 +82,7 @@ def state(config):
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
             raise ValueError("State lock must be a regular file")
         os.fchmod(lock.fileno(), 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         connection = sqlite3.connect(directory / "state.sqlite3")
         try:
             os.chmod(directory / "state.sqlite3", 0o600)
@@ -109,16 +118,26 @@ def poll(config, db):
     row = db.execute("SELECT value FROM scan").fetchone()
     progress = json.loads(row[0]) if row else {"after": None, "threads": [], "next": None,
                                                "loaded": False, "email_after": None}
+    progress.setdefault("thread_cursors", [])
+    progress.setdefault("email_cursors", [])
     while True:
         if not progress["loaded"]:
             rows, following = page(config, ["inboxes", "threads", "list", "--inbox_id", inbox,
                                            "--folders", "inbox", "archive", "spam", "sent", "trash"],
                                    progress["after"])
+            if following:
+                if following in progress["thread_cursors"]:
+                    raise ValueError("Discovery thread cursor repeated; restart discovery")
+                progress["thread_cursors"].append(following)
             progress.update(threads=[r["id"] for r in rows], next=following, loaded=True)
         if progress["threads"]:
             thread = progress["threads"][0]
             rows, following = page(config, ["inboxes", "threads", "emails", "list", "--inbox_id", inbox,
                                            "--thread_id", thread], progress["email_after"])
+            if following:
+                if following in progress["email_cursors"]:
+                    raise ValueError("Discovery email cursor repeated; restart discovery")
+                progress["email_cursors"].append(following)
             with db:
                 for message in rows:
                     db.execute("INSERT OR IGNORE INTO messages (id,payload) VALUES (?,?)",
@@ -126,6 +145,7 @@ def poll(config, db):
                 progress["email_after"] = following
                 if following is None:
                     progress["threads"].pop(0)
+                    progress["email_cursors"] = []
                 db.execute("DELETE FROM scan")
                 db.execute("INSERT INTO scan VALUES (?)", (encode(progress),))
         elif progress["next"]:
@@ -227,6 +247,10 @@ def reconcile(config, db, key):
 
 
 def doctor(config):
+    version = cli(config, "--version", help_text=True)
+    preview = re.search(r"2\.22\.0-preview-inboxes\.(\d+)", version)
+    if preview and int(preview[1]) < 8:
+        raise ValueError("This official preview has broken folder filters; upgrade before discovery/export")
     checks = {}
     for name, args, required in [
         ("draft_idempotency", ["inboxes", "drafts", "send", "--help"], "--idempotency-key"),
@@ -239,10 +263,263 @@ def doctor(config):
     return checks
 
 
+def pages(config, args):
+    cursor = None
+    visited = set()
+    while True:
+        rows, following = page(config, args, cursor)
+        yield from rows
+        if following is None:
+            return
+        if following in visited:
+            raise ValueError("Pagination cursor repeated")
+        visited.add(following)
+        cursor = following
+
+
+def without_urls(value):
+    if isinstance(value, dict):
+        return {key: without_urls(item) for key, item in value.items() if key != "download_url"}
+    if isinstance(value, list):
+        return [without_urls(item) for item in value]
+    return value
+
+
+def download(url, target, expected_size=None, timeout=None):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.port not in (None, 443):
+        raise ValueError("Expected a provider-generated HTTPS download URL")
+    addresses = socket.getaddrinfo(parts.hostname, 443, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+        raise ValueError("Download host must resolve to public addresses")
+    connection = http.client.HTTPSConnection(parts.hostname)
+    created = False
+    try:
+        for address in addresses:
+            raw_socket = None
+            try:
+                raw_socket = socket.create_connection((address[4][0], 443), timeout=timeout)
+                connection.sock = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=parts.hostname)
+                break
+            except OSError:
+                if raw_socket:
+                    raw_socket.close()
+        else:
+            raise OSError("No validated download address connected")
+        connection.request("GET", urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, "")))
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError("Download requires HTTP 200; redirects are refused")
+        with target.open("xb") as output:
+            created = True
+            shutil.copyfileobj(response, output)
+            output.flush()
+            os.fsync(output.fileno())
+        length = response.getheader("Content-Length")
+        if length is not None and target.stat().st_size != int(length):
+            raise ValueError("Download ended before the declared content length")
+        if expected_size is not None and target.stat().st_size != expected_size:
+            raise ValueError("Downloaded size differs from provider metadata")
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise RuntimeError("Download failed; signed URLs are omitted from diagnostics") from None
+    finally:
+        connection.close()
+
+
+def file_record(path, root):
+    checksum = hashlib.sha256()
+    with path.open("rb") as data:
+        for block in iter(lambda: data.read(1024 * 1024), b""):
+            checksum.update(block)
+    return {"path": path.relative_to(root).as_posix(), "bytes": path.stat().st_size,
+            "sha256": checksum.hexdigest()}
+
+
+def verify(root):
+    root = outside_git(root)
+    if (root / "manifest.json").is_symlink():
+        raise ValueError("Manifest must be a regular file")
+    manifest = json.loads((root / "manifest.json").read_text())
+    if manifest.get("format") != 1:
+        raise ValueError("Unsupported manifest format")
+    listed = set()
+    for record in manifest["files"]:
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts or str(relative) in listed:
+            raise ValueError("Unsafe or duplicate manifest path")
+        listed.add(str(relative))
+        path = root / relative
+        if not path.resolve().is_relative_to(root) or path.is_symlink() or not path.is_file():
+            raise ValueError("Manifest path must name a regular file inside the archive")
+        if file_record(path, root) != record:
+            raise ValueError(f"Archive verification failed: {relative}")
+    actual = {str(path.relative_to(root)) for path in root.rglob("*")
+              if path.is_file() and path != root / "manifest.json"}
+    if actual != listed:
+        raise ValueError("Archive contains unlisted or missing files")
+    return {"integrity_verified": True, "enumeration_complete": manifest["enumeration_complete"],
+            "content_complete": manifest["content_complete"], "gaps": manifest["gaps"],
+            "limits": manifest["limits"]}
+
+
+def export(config, destination):
+    timeout = float(config["download_timeout_seconds"])
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("download_timeout_seconds must be a measured positive inactivity timeout")
+    root = outside_git(destination)
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    manifest = {"format": 1, "inbox_id": config["inbox_id"], "files": [], "gaps": [],
+                "enumeration_complete": False, "content_complete": False,
+                "limits": ["Paginated traversal is not an atomic snapshot; mail can move or be deleted.",
+                           "Only provider-retained, accessible items are enumerated; this is not a restore format.",
+                           "Outbound original raw MIME/full headers unavailable; bodies and provider metadata saved."]}
+
+    def persist():
+        temporary = root / ".manifest.tmp"
+        with temporary.open("w") as output:
+            output.write(encode(manifest) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, root / "manifest.json")
+
+    def save(relative, value):
+        path = root / relative
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        content = value if isinstance(value, bytes) else (encode(without_urls(value)) + "\n").encode()
+        with path.open("xb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        manifest["files"].append(file_record(path, root))
+        persist()
+
+    def fetch_bytes(relative, url, size=None):
+        path = root / relative
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        download(url, path, size, timeout=timeout)
+        manifest["files"].append(file_record(path, root))
+        persist()
+
+    def gap(component, error):
+        manifest["gaps"].append({"component": component, "reason": type(error).__name__})
+        persist()
+
+    def export_email(email, thread_id):
+        email_id = identifier(email["id"])
+        prefix = f"emails/{email_id}"
+        save(prefix + "/native.json", {"thread_id": thread_id, "email": email})
+        for field, suffix in (("text", "txt"), ("html", "html")):
+            if isinstance(email.get(field), str):
+                save(prefix + "/body." + suffix, email[field].encode())
+        if email.get("direction") not in ("inbound", "outbound"):
+            raise ValueError("Unknown email direction")
+        args = ["emails"] + (["receiving"] if email["direction"] == "inbound" else [])
+        try:
+            public = cli(config, *args, "get", email_id)
+            if public.get("id") != email_id or not email.get("message_id") or public.get("message_id") != email["message_id"]:
+                raise ValueError("Public endpoint did not confirm the native Message-ID")
+            save(prefix + "/provider.json", public)
+        except (RuntimeError, ValueError, KeyError, OSError) as error:
+            gap(prefix + "/provider", error)
+            return
+        raw = (public.get("raw") or {}).get("download_url")
+        if raw:
+            try:
+                fetch_bytes(prefix + "/message.eml", raw)
+            except (RuntimeError, ValueError, OSError) as error:
+                gap(prefix + "/raw", error)
+        elif email["direction"] == "inbound":
+            gap(prefix + "/raw-unavailable", ValueError())
+        found = set()
+        try:
+            for attachment in pages(config, args + ["attachments", email_id]):
+                attachment_id = identifier(attachment["id"])
+                if attachment_id in found:
+                    raise ValueError("Repeated attachment ID")
+                found.add(attachment_id)
+                relative = prefix + f"/attachments/{attachment_id}"
+                save(relative + ".json", attachment)
+                try:
+                    fetch_bytes(relative + ".bin", attachment["download_url"], attachment.get("size"))
+                except (RuntimeError, ValueError, KeyError, OSError) as error:
+                    gap(relative, error)
+            if not {identifier(a["id"]) for a in email["attachments"]}.issubset(found):
+                raise ValueError("Native attachments missing from public listing")
+        except (RuntimeError, ValueError, KeyError, OSError) as error:
+            gap(prefix + "/attachments", error)
+
+    persist()
+    inbox = config["inbox_id"]
+    try:
+        save("inbox.json", cli(config, "inboxes", "get", inbox))
+        save("labels.json", cli(config, "inboxes", "labels", "list", "--inbox_id", inbox))
+        found_threads, found_emails = set(), set()
+        for thread in pages(config, ["inboxes", "threads", "list", "--inbox_id", inbox,
+                                     "--folders", "inbox", "archive", "spam", "sent", "trash"]):
+            thread_id = identifier(thread["id"])
+            if thread_id in found_threads:
+                continue
+            found_threads.add(thread_id)
+            save(f"threads/{thread_id}.json", thread)
+            thread_emails = set()
+            for email in pages(config, ["inboxes", "threads", "emails", "list", "--inbox_id", inbox,
+                                       "--thread_id", thread_id]):
+                thread_emails.add(email["id"])
+                if email["id"] in found_emails:
+                    continue
+                found_emails.add(email["id"])
+                export_email(email, thread_id)
+            if "message_count" in thread and len(thread_emails) != thread["message_count"]:
+                gap(f"threads/{thread_id}/count-changed", ValueError())
+        for draft in pages(config, ["inboxes", "drafts", "list", "--inbox_id", inbox]):
+            draft_id = identifier(draft["id"])
+            full = cli(config, "inboxes", "drafts", "get", "--inbox_id", inbox, "--draft_id", draft_id)
+            if full.get("id") != draft_id:
+                raise ValueError("Unexpected draft identity")
+            save(f"drafts/{draft_id}.json", full)
+        manifest["enumeration_complete"] = True
+        manifest["content_complete"] = not manifest["gaps"]
+    except (RuntimeError, ValueError, KeyError, OSError) as error:
+        gap("enumeration", error)
+    persist()
+    return {"archive": str(root), **verify(root)}
+
+
+def copy_destination(destination):
+    if not isinstance(destination, str) or destination.startswith("-") or not destination.endswith("/"):
+        raise ValueError("archive_copy must be an existing destination directory ending in /")
+    if ":" not in destination.split("/", 1)[0]:
+        local = outside_git(destination)
+        if not local.is_dir():
+            raise ValueError("Local archive_copy directory must already exist")
+        return str(local) + "/"
+    return destination
+
+
+def run(config, db):
+    doctor(config)
+    discovered = poll(config, db)
+    name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex
+    archive = outside_git(config["archive_dir"]) / name
+    result = export(config, archive)
+    result["pending_count"] = len(discovered["pending"])
+    if config.get("archive_copy"):
+        destination = copy_destination(config["archive_copy"])
+        copied = subprocess.run(["rsync", "--archive", "--checksum", "--protect-args", "--",
+                                 str(archive), destination], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, check=False)
+        if copied.returncode:
+            raise RuntimeError(f"Archive copy failed (rsync exit {copied.returncode}); local archive retained")
+        result["copy"] = {"transferred": True, "verification": "rsync checksum transfer; no independent remote manifest rehash"}
+    return result
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, help="Trusted private JSON: inbox_id, state_dir, optional profile")
+    parser.add_argument("--config", help="Trusted private JSON: inbox_id, state_dir, optional profile")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("doctor", "poll", "pending"):
         commands.add_parser(name)
@@ -256,7 +533,15 @@ def main():
     command.add_argument("--review-sha256", required=True, help="SHA-256 from the snapshot this caller inspected")
     command.add_argument("--authorized", action="store_true", required=True)
     commands.add_parser("reconcile").add_argument("key")
+    commands.add_parser("run", help="Read/archive only; config adds archive_dir and optional rsync archive_copy")
+    commands.add_parser("export").add_argument("--output", required=True, help="New private archive directory")
+    commands.add_parser("verify").add_argument("archive", help="Verify local manifest bytes; no config or network needed")
     args = parser.parse_args()
+    if args.command == "verify":
+        print(encode(verify(args.archive)))
+        return
+    if not args.config:
+        parser.error("--config is required except for verify")
     config = json.loads(outside_git(args.config).read_text())
     config["inbox_id"] = identifier(config["inbox_id"])
     if not Path(config["state_dir"]).is_absolute():
@@ -267,6 +552,7 @@ def main():
         if args.command == "doctor":
             result = doctor(config)
         elif args.command == "poll":
+            doctor(config)
             result = poll(config, db)
         elif args.command == "pending":
             result = {"pending": pending(db)}
@@ -284,14 +570,24 @@ def main():
             result = review(config, db, args.draft_id, args.key)
         elif args.command == "send":
             result = send(config, db, args.key, args.review_sha256)
+        elif args.command == "export":
+            doctor(config)
+            result = export(config, args.output)
+        elif args.command == "run":
+            result = run(config, db)
         else:
             result = reconcile(config, db, args.key)
     print(encode(result))
+    if result.get("enumeration_complete") is False or result.get("content_complete") is False:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
     try:
         main()
+    except BlockingIOError:
+        print(encode({"error": "Another invocation owns this state directory"}), file=sys.stderr)
+        sys.exit(75)
     except (ValueError, KeyError, OSError, RuntimeError, sqlite3.Error) as error:
         print(encode({"error": str(error)}), file=sys.stderr)
         sys.exit(1)

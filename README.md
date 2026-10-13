@@ -11,6 +11,7 @@ credentials, sessions, browser profiles, or application-owned skills.
 - [Install the profile and connect your agents](docs/install.md)
 - [Develop and validate changes](docs/development.md)
 - [Workflow dependencies and loading behavior](docs/reference.md)
+- [Use the portable mailbox helper](docs/agent-mailbox.md)
 
 [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [MIT license](LICENSE)
 

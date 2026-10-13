@@ -4,6 +4,7 @@
 from copy import deepcopy
 import importlib.machinery
 import importlib.util
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -21,7 +22,7 @@ class MailboxTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(self.temporary.cleanup)
-        self.config = {"inbox_id": INBOX, "state_dir": self.temporary.name + "/state"}
+        self.config = {"inbox_id": INBOX, "state_dir": self.temporary.name + "/state", "download_timeout_seconds": 1}
         self.draft = dict(id=DRAFT, type="standalone", to=["reader@example.test"], cc=[], bcc=[],
                           subject="Synthetic", text="Reviewed body", html=None, thread_id=None,
                           reply_to_email_id=None, email_id=None, updated_at="synthetic-version-1")
@@ -152,6 +153,178 @@ class MailboxTests(unittest.TestCase):
                 self.assertEqual(target.read_text(), "Preserve this file")
                 self.assertEqual(target.stat().st_mode, before)
                 link.unlink()
+
+    def test_overlap_fails_without_waiting(self):
+        with mailbox.state(self.config):
+            with self.assertRaises(BlockingIOError):
+                with mailbox.state(self.config):
+                    self.fail("Overlapping invocation acquired the lock")
+
+    def test_export_pages_downloads_and_verification(self):
+        attachment_ids = [f"00000000-0000-4000-8000-{i:012d}" for i in (6, 7)]
+        second_thread = "00000000-0000-4000-8000-000000000008"
+        email = dict(id=EMAIL, direction="inbound", message_id="<synthetic@example.test>",
+                     text="Exact authored body\n", html=None,
+                     attachments=[dict(id=value) for value in attachment_ids])
+        outbound = {**email, "id": OTHER, "direction": "outbound", "attachments": [],
+                    "message_id": "<synthetic-outbound@example.test>"}
+        downloaded = {}
+        fail_attachment = False
+
+        def cli(config, *args, help_text=False):
+            if args[:2] == ("inboxes", "get"):
+                return dict(id=INBOX)
+            if args[:3] == ("inboxes", "labels", "list"):
+                return dict(object="list", data=[])
+            cursor = args[args.index("--after") + 1] if "--after" in args else None
+            if args[:3] == ("inboxes", "threads", "list"):
+                self.assertIn("trash", args)
+                rows = [{"id": THREAD}] if cursor is None else [{"id": second_thread}]
+                return dict(data=rows, has_more=cursor is None)
+            if args[:4] == ("inboxes", "threads", "emails", "list"):
+                rows = [email] if cursor is None else [outbound]
+                return dict(data=rows, has_more=cursor is None)
+            if args[:3] == ("inboxes", "drafts", "list"):
+                return dict(data=[{"id": DRAFT}], has_more=False)
+            if args[:3] == ("inboxes", "drafts", "get"):
+                return self.draft
+            if args[:3] == ("emails", "receiving", "get"):
+                return {**email, "headers": {"x-synthetic": "preserved"},
+                        "raw": {"download_url": "https://downloads.example.test/raw?synthetic-secret"}}
+            if args[:2] == ("emails", "get"):
+                return {**outbound, "last_event": "delivered"}
+            if args[:3] == ("emails", "receiving", "attachments"):
+                index = 0 if cursor is None else 1
+                if fail_attachment and index:
+                    raise RuntimeError("Attachment page unavailable")
+                return dict(data=[dict(id=attachment_ids[index], size=3,
+                                       filename="../../untrusted.sh",
+                                       download_url=f"https://downloads.example.test/{index}?synthetic-secret")],
+                            has_more=index == 0)
+            if args[:2] == ("emails", "attachments"):
+                return dict(data=[], has_more=False)
+            raise AssertionError(args)
+
+        def download(url, path, size=None, timeout=None):
+            content = b"Raw synthetic MIME\r\n" if "/raw" in url else b"abc"
+            path.write_bytes(content)
+            downloaded[str(path)] = content
+            if size is not None:
+                self.assertEqual(len(content), size)
+
+        with patch.object(mailbox, "cli", cli), patch.object(mailbox, "download", download):
+            destination = Path(self.temporary.name) / "archive"
+            result = mailbox.export(self.config, destination)
+            self.assertTrue(result["integrity_verified"] and result["enumeration_complete"] and result["content_complete"])
+            self.assertEqual(len(downloaded), 3)
+            self.assertTrue(any("Outbound" in item for item in result["limits"]))
+            self.assertEqual((destination / f"emails/{EMAIL}/body.txt").read_text(), email["text"])
+            manifest = mailbox.json.loads((destination / "manifest.json").read_text())
+            for record in manifest["files"]:
+                if record["path"].endswith(".json"):
+                    saved = (destination / record["path"]).read_text()
+                    self.assertNotIn("download_url", saved)
+                    self.assertNotIn("synthetic-secret", saved)
+            raw = destination / f"emails/{EMAIL}/message.eml"
+            raw.write_bytes(b"corruption")
+            with self.assertRaisesRegex(ValueError, "verification failed"):
+                mailbox.verify(destination)
+            fail_attachment = True
+            partial = mailbox.export(self.config, Path(self.temporary.name) / "partial")
+            self.assertTrue(partial["integrity_verified"])
+            self.assertFalse(partial["content_complete"])
+            self.assertTrue(partial["gaps"])
+
+    def test_verify_rejects_escape_and_download_rejects_private_hosts(self):
+        root = Path(self.temporary.name) / "malicious"
+        root.mkdir()
+        (root / "manifest.json").write_text(mailbox.encode({"format": 1, "files": [
+            {"path": "../unrelated", "bytes": 0, "sha256": "untrusted"}]}))
+        with self.assertRaisesRegex(ValueError, "Unsafe"):
+            mailbox.verify(root)
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            mailbox.download("http://localhost/secret", root / "bytes")
+        addresses = [(mailbox.socket.AF_INET, mailbox.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+        with patch.object(mailbox.socket, "getaddrinfo", return_value=addresses):
+            with self.assertRaisesRegex(ValueError, "public addresses"):
+                mailbox.download("https://downloads.example.test/secret", root / "bytes")
+
+    def test_download_rejects_truncated_bytes_and_preserves_existing_files(self):
+        root = Path(self.temporary.name)
+        response = io.BytesIO(b"abc")
+        response.status = 200
+        response.getheader = lambda name: "4"
+        connection = unittest.mock.Mock()
+        connection.getresponse.return_value = response
+        addresses = [(mailbox.socket.AF_INET, mailbox.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        with patch.object(mailbox.socket, "getaddrinfo", return_value=addresses), \
+                patch.object(mailbox.socket, "create_connection") as connect, \
+                patch.object(mailbox.ssl, "create_default_context"), \
+                patch.object(mailbox.http.client, "HTTPSConnection", return_value=connection):
+            target = root / "download"
+            with self.assertRaisesRegex(RuntimeError, "Download failed"):
+                mailbox.download("https://downloads.example.test/raw", target, timeout=1)
+            self.assertFalse(target.exists())
+            connect.assert_called_with(("93.184.216.34", 443), timeout=1)
+            target.write_bytes(b"Preserve existing bytes")
+            with self.assertRaises(RuntimeError):
+                mailbox.download("https://downloads.example.test/raw", target, timeout=1)
+            self.assertEqual(target.read_bytes(), b"Preserve existing bytes")
+
+    def test_run_reports_counts_and_copy_is_optional(self):
+        self.config["archive_dir"] = self.temporary.name + "/archives"
+        result = dict(integrity_verified=True, enumeration_complete=True, content_complete=True)
+        with patch.object(mailbox, "doctor"), \
+                patch.object(mailbox, "poll", return_value={"pending": [{"private_body": "Do not log"}]}), \
+                patch.object(mailbox, "export", return_value=result), \
+                patch.object(mailbox.subprocess, "run") as copied:
+            with mailbox.state(self.config) as db:
+                self.assertEqual(mailbox.run(self.config, db)["pending_count"], 1)
+                copied.assert_not_called()
+                self.config["archive_copy"] = "backup-host:/private/archive/"
+                copied.return_value.returncode = 0
+                receipt = mailbox.run(self.config, db)
+                self.assertTrue(receipt["copy"]["transferred"])
+                self.assertNotIn("Do not log", mailbox.encode(receipt))
+                self.assertIn("--protect-args", copied.call_args.args[0])
+                local = Path(self.temporary.name) / "backup:local"
+                local.mkdir()
+                self.assertEqual(mailbox.copy_destination(str(local) + "/"), str(local.resolve()) + "/")
+                with patch.dict(mailbox.os.environ, {"HOME": self.temporary.name}):
+                    self.assertEqual(mailbox.copy_destination("~/"), self.temporary.name + "/")
+                checkout = Path(self.temporary.name) / "checkout"
+                (checkout / ".git").mkdir(parents=True)
+                (checkout / ".git/HEAD").write_text("ref: refs/heads/main")
+                forbidden = checkout / "backup:local"
+                forbidden.mkdir()
+                with self.assertRaisesRegex(ValueError, "outside Git"):
+                    mailbox.copy_destination(str(forbidden) + "/")
+
+    def test_download_timeout_and_dns_fallback(self):
+        addresses = [(mailbox.socket.AF_INET, mailbox.socket.SOCK_STREAM, 6, "", (host, 443))
+                     for host in ("93.184.216.34", "93.184.216.35")]
+        response = io.BytesIO(b"abc")
+        response.status = 200
+        response.getheader = lambda name: "3"
+        connection = unittest.mock.Mock()
+        connection.getresponse.return_value = response
+        target = Path(self.temporary.name) / "bytes"
+        with patch.object(mailbox.socket, "getaddrinfo", return_value=addresses), \
+                patch.object(mailbox.socket, "create_connection", side_effect=[OSError("unreachable"), unittest.mock.Mock()]) as connect, \
+                patch.object(mailbox.ssl, "create_default_context"), \
+                patch.object(mailbox.http.client, "HTTPSConnection", return_value=connection):
+            mailbox.download("https://downloads.example.test/raw", target, timeout=1)
+            self.assertEqual(target.read_bytes(), b"abc")
+            self.assertEqual(connect.call_count, 2)
+        target.unlink()
+        with patch.object(mailbox.socket, "getaddrinfo", return_value=addresses), \
+                patch.object(mailbox.socket, "create_connection"), \
+                patch.object(mailbox.ssl, "create_default_context"), \
+                patch.object(mailbox.http.client, "HTTPSConnection", return_value=connection):
+            connection.getresponse.side_effect = TimeoutError("stalled response")
+            with self.assertRaisesRegex(RuntimeError, "Download failed"):
+                mailbox.download("https://downloads.example.test/raw", target, timeout=1)
+            self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":
