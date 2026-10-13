@@ -67,7 +67,8 @@ when the contract depends on them.
   environments that support daily work unless the user explicitly asks. State
   exactly what you will touch before acting.
 - Never push, open a pull request, or create or update a remote issue unless the
-  user explicitly asks. Follow the project's conventions when asked.
+  user explicitly asks. An authorized note edit includes committing and pushing
+  through the notes repository's workflow. Follow the project's conventions.
 
 # Operational limits and quantitative claims need receipts
 

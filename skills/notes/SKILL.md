@@ -17,7 +17,8 @@ submission instructions.
   preserve source text, evidence, and meaningful dates.
 - Preserve existing IDs and links. Return a verified note link when available;
   never invent one.
-- Remote submission requires explicit user authorization, not just access.
+- An authorized note edit includes committing and pushing through the
+  repository's workflow; do not ask for separate push approval.
 - Verify what was saved and where. Do not imply submission, integration, or
   publication from a local save.
 - If access is unavailable, report the blocker and any unsaved context. Do not
