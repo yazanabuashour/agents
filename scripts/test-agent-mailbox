@@ -2,6 +2,7 @@
 """Offline protection for durable mailbox state and uncertain sends."""
 
 from copy import deepcopy
+from contextlib import closing
 import importlib.machinery
 import importlib.util
 import io
@@ -38,7 +39,7 @@ class MailboxTests(unittest.TestCase):
             if args[:3] == ("inboxes", "drafts", "get"):
                 return deepcopy(self.draft)
             if args[:3] == ("inboxes", "drafts", "send"):
-                with mailbox.sqlite3.connect(Path(config["state_dir"]) / "state.sqlite3") as db:
+                with closing(mailbox.sqlite3.connect(Path(config["state_dir"]) / "state.sqlite3")) as db:
                     assert db.execute("SELECT status FROM intents").fetchone()[0] == "attempting"
                 if self.failure:
                     raise self.failure
@@ -111,6 +112,64 @@ class MailboxTests(unittest.TestCase):
             with self.assertRaises(mailbox.sqlite3.IntegrityError):
                 mailbox.review(self.config, db, DRAFT, "another-key")
             mailbox.send(self.config, db, "action", second)
+
+    def test_id_only_send_receipt_requires_known_draft_confirmation(self):
+        original_cli = mailbox.cli
+        self.draft.update(type="reply", thread_id=THREAD, reply_to_email_id=OTHER)
+        confirmed = {**self.draft, "email_id": EMAIL}
+        cases = [
+            ("confirmed", {"id": EMAIL}, confirmed, True),
+            ("foreign-email", {"id": OTHER}, confirmed, False),
+            ("draft-id-is-not-email-id", {"id": DRAFT}, confirmed, False),
+            ("foreign-draft", {"id": EMAIL}, {**confirmed, "id": OTHER}, False),
+            ("unsent-draft", {"id": EMAIL}, self.draft, False),
+            ("missing-thread", {"id": EMAIL}, {**confirmed, "thread_id": None}, False),
+            ("invalid-thread", {"id": EMAIL}, {**confirmed, "thread_id": "invalid"}, False),
+            ("readback-failed", {"id": EMAIL}, RuntimeError("Readback failed"), False),
+            ("invalid-response-id", {"id": "invalid"}, confirmed, False),
+        ]
+        for name, response, readback, success in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
+                config = {**self.config, "state_dir": directory + "/state"}
+                attempted = False
+                start = len(self.calls)
+
+                def cli(config, *args, help_text=False):
+                    nonlocal attempted
+                    if args[:3] == ("inboxes", "drafts", "send") and not help_text:
+                        original_cli(config, *args)
+                        attempted = True
+                        return deepcopy(response)
+                    if attempted and args[:3] == ("inboxes", "drafts", "get"):
+                        self.assertEqual(args[args.index("--draft_id") + 1], DRAFT)
+                        if isinstance(readback, Exception):
+                            raise readback
+                        return deepcopy(readback)
+                    return original_cli(config, *args, help_text=help_text)
+
+                with patch.object(mailbox, "cli", cli):
+                    with mailbox.state(config) as db:
+                        reviewed = mailbox.review(config, db, DRAFT, "id-only")["sha256"]
+                        if success:
+                            receipt = mailbox.send(config, db, "id-only", reviewed)
+                            self.assertEqual(receipt["result"]["id"], DRAFT)
+                            self.assertEqual(receipt["result"]["email_id"], EMAIL)
+                            self.assertEqual(receipt["result"]["thread_id"], THREAD)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "uncertain"):
+                                mailbox.send(config, db, "id-only", reviewed)
+                            self.assertEqual(mailbox.intent(db, "id-only")[2], "uncertain")
+                    with mailbox.state(config) as db:
+                        if success:
+                            self.assertEqual(mailbox.send(config, db, "id-only", reviewed), receipt)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "uncertain"):
+                                mailbox.send(config, db, "id-only", reviewed)
+                            with patch.object(mailbox, "cli", return_value=confirmed):
+                                self.assertEqual(mailbox.reconcile(config, db, "id-only")["status"], "sent")
+                sends = [args for args in self.calls[start:] if args[:3] == ("inboxes", "drafts", "send")
+                         and "--help" not in args]
+                self.assertEqual(len(sends), 1)
 
     def test_timeout_and_process_death_block_retry(self):
         for failure in (RuntimeError("timeout"), KeyboardInterrupt()):

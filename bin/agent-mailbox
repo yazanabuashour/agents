@@ -216,6 +216,11 @@ def send(config, db, key, reviewed_sha256):
     try:
         result = cli(config, "inboxes", "drafts", "send", "--inbox_id", config["inbox_id"],
                      "--draft_id", draft_id, "--idempotency-key", request_key)
+        if set(result) == {"id"}:
+            email_id = identifier(result["id"])
+            result = sent_draft(config, draft_id)
+            if result is None or result["email_id"] != email_id:
+                raise ValueError("Native draft did not confirm the send response email ID")
         if result.get("id") != draft_id or not result.get("email_id") or not result.get("thread_id"):
             raise ValueError("Unexpected send receipt")
         identifier(result["email_id"])
@@ -229,10 +234,7 @@ def send(config, db, key, reviewed_sha256):
     return {"status": "sent", "result": result}
 
 
-def reconcile(config, db, key):
-    draft_id, _, status, saved = intent(db, key)
-    if status == "sent":
-        return {"status": status, "result": json.loads(saved)}
+def sent_draft(config, draft_id):
     draft = cli(config, "inboxes", "drafts", "get", "--inbox_id", config["inbox_id"],
                 "--draft_id", draft_id)
     if draft.get("id") != draft_id:
@@ -240,8 +242,17 @@ def reconcile(config, db, key):
     if draft.get("email_id") and draft.get("thread_id"):
         identifier(draft["email_id"])
         identifier(draft["thread_id"])
-        receipt = {"id": draft_id, "email_id": draft["email_id"], "thread_id": draft["thread_id"],
-                   "evidence": "native draft reports sent; may have been sent in the human UI"}
+        return {"id": draft_id, "email_id": draft["email_id"], "thread_id": draft["thread_id"],
+                "evidence": "native draft reports sent; may have been sent in the human UI"}
+    return None
+
+
+def reconcile(config, db, key):
+    draft_id, _, status, saved = intent(db, key)
+    if status == "sent":
+        return {"status": status, "result": json.loads(saved)}
+    receipt = sent_draft(config, draft_id)
+    if receipt is not None:
         with db:
             db.execute("UPDATE intents SET status='sent',result=? WHERE key=?", (encode(receipt), key))
         return {"status": "sent", "result": receipt}
