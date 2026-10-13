@@ -341,13 +341,22 @@ def file_record(path, root):
 
 def verify(root):
     root = outside_git(root)
-    if (root / "manifest.json").is_symlink():
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("Manifest must be a regular file")
-    manifest = json.loads((root / "manifest.json").read_text())
-    if manifest.get("format") != 1:
+    manifest = json.loads(manifest_path.read_text())
+    if not isinstance(manifest, dict) or type(manifest.get("format")) is not int or manifest["format"] != 1:
         raise ValueError("Unsupported manifest format")
+    for field in ("files", "gaps", "limits"):
+        if not isinstance(manifest.get(field), list):
+            raise ValueError(f"Manifest {field} must be a list")
+    for field in ("enumeration_complete", "content_complete"):
+        if type(manifest.get(field)) is not bool:
+            raise ValueError(f"Manifest {field} must be a boolean")
     listed = set()
     for record in manifest["files"]:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise ValueError("Manifest file records must name a string path")
         relative = Path(record["path"])
         if relative.is_absolute() or ".." in relative.parts or str(relative) in listed:
             raise ValueError("Unsafe or duplicate manifest path")
@@ -357,8 +366,21 @@ def verify(root):
             raise ValueError("Manifest path must name a regular file inside the archive")
         if file_record(path, root) != record:
             raise ValueError(f"Archive verification failed: {relative}")
-    actual = {str(path.relative_to(root)) for path in root.rglob("*")
-              if path.is_file() and path != root / "manifest.json"}
+    actual = set()
+    directories = [root]
+    while directories:
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if entry.is_symlink():
+                    raise ValueError("Archive entries must be regular files or directories, never symlinks")
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    if path != manifest_path:
+                        actual.add(str(path.relative_to(root)))
+                else:
+                    raise ValueError("Archive entries must be regular files or directories, never symlinks")
     if actual != listed:
         raise ValueError("Archive contains unlisted or missing files")
     return {"integrity_verified": True, "enumeration_complete": manifest["enumeration_complete"],

@@ -175,10 +175,13 @@ The manifest records SHA-256 hashes of saved bytes, sizes, gaps, and format limi
 supported content was obtained, subject to the declared limits. A hash manifest
 detects changes relative to that manifest; it is not signed provenance.
 
-`verify` checks local file membership, sizes, and hashes without credentials or
-network. It reports integrity separately from completeness. Interrupted exports
-retain an incomplete manifest; start a fresh export instead of treating the
-partial directory as complete.
+`verify` checks manifest structure, local file membership, sizes, and hashes
+without credentials or network. Archives may contain only regular files and
+directories, never symlinks or special files; the manifest must be a regular file.
+Verification fails if any directory cannot be enumerated. It reports integrity
+separately from completeness. Interrupted exports retain an
+incomplete manifest; start a fresh export instead of treating the partial directory
+as complete.
 
 ## Exit status
 
@@ -186,5 +189,5 @@ partial directory as complete.
 | --- | --- |
 | `0` | Operation succeeded; for `verify`, bytes match even if the archive is explicitly partial |
 | `1` | Error |
-| `2` | `run`/`export` retained an archive with incomplete content or enumeration; inspect its JSON |
+| `2` | Command-line usage error, or `run`/`export` retained an incomplete archive; inspect usage on stderr or archive JSON on stdout |
 | `75` | Another invocation owns the state directory |

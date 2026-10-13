@@ -23,7 +23,7 @@ def main():
     )
     files.extend(
         (source, home / ".local/bin" / source.name, 0o755)
-        for source in sorted((root / "bin").iterdir())
+        for source in sorted((root / "bin").iterdir()) if source.is_file()
     )
     changes = []
     for source, target, mode in files:
