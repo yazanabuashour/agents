@@ -6,6 +6,10 @@ package to load the instructions and skills.
 
 ## Inspect and install
 
+Stop other writers to the target files and directories before previewing or
+applying an install. The installer requires a trusted, quiescent home: its static
+symlink checks do not protect against concurrent directory replacement.
+
 ```sh
 git clone https://github.com/yazanabuashour/agents.git
 cd agents

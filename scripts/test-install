@@ -28,20 +28,27 @@ with tempfile.TemporaryDirectory() as temporary:
     (skills / "siftwire").mkdir()
     application = skills / "siftwire/SKILL.md"
     application.write_text("Version-matched application policy\n")
+    old_helper = home / ".local/bin/checkpoint-review"
+    old_helper.parent.mkdir(parents=True)
+    binary = b"\x7fELF\xff\x00Earlier helper"
+    old_helper.write_bytes(binary)
+    old_helper.chmod(0o755)
     environment = {**os.environ, "HOME": str(home), "XDG_STATE_HOME": str(home / ".local/state")}
 
     def run(*arguments):
-        return subprocess.run([str(root / "scripts/install-local"), *arguments], env=environment,
+        return subprocess.run([str(root / "scripts/install-local"), *arguments], cwd=root, env=environment,
                               capture_output=True, text=True, check=True)
 
     preview = run()
     assert str(baseline) in preview.stdout
     assert baseline.read_text() == "Earlier personal policy\n"
-    assert not (home / ".local/bin/checkpoint-review").exists()
+    assert old_helper.read_bytes() == binary
+    assert "Non-UTF-8 content; no text diff" in preview.stdout
     installed = run("--apply")
     backups = list((home / ".local/state/agents/backups").glob("install-*"))
     assert len(backups) == 1
     assert (backups[0] / ".agents/AGENTS.md").read_text() == "Earlier personal policy\n"
+    assert (backups[0] / ".local/bin/checkpoint-review").read_bytes() == binary
     assert "Backups:" in installed.stdout
     assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
     assert baseline.stat().st_mode & 0o777 == 0o600
@@ -62,6 +69,28 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not (home / ".claude").exists()
     assert run().stdout == "Preview only. Run scripts/install-local --apply to install these files.\n"
     assert run("--apply").stdout == "Personal agent files already match.\n"
+    for state_value in ("", "relative-state"):
+        baseline.write_text("Private previous policy\n")
+        before = set((home / ".local/state/agents/backups").iterdir())
+        environment["XDG_STATE_HOME"] = state_value
+        run("--apply")
+        created = set((home / ".local/state/agents/backups").iterdir()) - before
+        assert len(created) == 1
+        assert (created.pop() / ".agents/AGENTS.md").read_text() == "Private previous policy\n"
+        assert not (root / "agents/backups").exists()
+        assert not (root / "relative-state").exists()
+    environment["XDG_STATE_HOME"] = str(home / ".local/state")
+    source_skill = root / "skills/technical-writing"
+    saved_skill = Path(temporary) / "source-skill"
+    source_skill.rename(saved_skill)
+    source_skill.symlink_to(saved_skill, target_is_directory=True)
+    refused = subprocess.run([str(root / "scripts/install-local"), "--apply"], env=environment,
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and "Source must not be a symlink" in refused.stderr
+    assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
+    assert (skills / "omarchy").is_symlink()
+    source_skill.unlink()
+    saved_skill.rename(source_skill)
     baseline.unlink()
     baseline.symlink_to(outside / "SKILL.md")
     refused = subprocess.run([str(root / "scripts/install-local"), "--apply"], env=environment,

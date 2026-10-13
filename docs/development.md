@@ -16,6 +16,8 @@ scripts/check
 - `scripts/check-profile`: skill metadata, repository JSON and YAML, and local
   inline Markdown link targets. Inspect heading fragments and external links
   when changing them; the validator checks only local paths.
+- `scripts/test-profile`: titled and angle-delimited local links and source skill
+  symlink refusal in a disposable checkout.
 - Bash syntax, ShellCheck, and shfmt for the shell entry points.
 - `scripts/test-install`: preview, copies, permissions, backups, repeat installs,
   and symlink refusal in a disposable home.

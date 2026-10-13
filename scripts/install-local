@@ -16,14 +16,22 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     home = Path.home()
+    for directory in (root / "instructions", root / "skills", root / "bin"):
+        if directory.is_symlink():
+            raise SystemExit(f"Source must not be a symlink: {directory}")
+    skills = sorted((root / "skills").rglob("*"))
+    helpers = sorted((root / "bin").iterdir())
+    for source in (*skills, *helpers):
+        if source.is_symlink():
+            raise SystemExit(f"Source must not be a symlink: {source}")
     files = [(root / "instructions/AGENTS.md", home / ".agents/AGENTS.md", 0o600)]
     files.extend(
         (source, home / ".agents" / source.relative_to(root), 0o644)
-        for source in sorted((root / "skills").rglob("*")) if source.is_file()
+        for source in skills if source.is_file()
     )
     files.extend(
         (source, home / ".local/bin" / source.name, 0o755)
-        for source in sorted((root / "bin").iterdir()) if source.is_file()
+        for source in helpers if source.is_file()
     )
     changes = []
     for source, target, mode in files:
@@ -44,11 +52,16 @@ def main():
         if target.exists() and before == after and old_mode == mode:
             continue
         print(f"{target}: mode {oct(old_mode) if old_mode is not None else 'absent'} -> {oct(mode)}")
-        print("".join(difflib.unified_diff(
-            before.decode().splitlines(keepends=True),
-            after.decode().splitlines(keepends=True),
-            fromfile=str(target), tofile=str(source),
-        )), end="")
+        try:
+            before_text, after_text = before.decode(), after.decode()
+        except UnicodeDecodeError:
+            print("Non-UTF-8 content; no text diff. Inspect the source before applying.")
+        else:
+            print("".join(difflib.unified_diff(
+                before_text.splitlines(keepends=True),
+                after_text.splitlines(keepends=True),
+                fromfile=str(target), tofile=str(source),
+            )), end="")
         changes.append((target, mode, after))
     if not args.apply:
         print("Preview only. Run scripts/install-local --apply to install these files.")
@@ -56,7 +69,10 @@ def main():
     if not changes:
         print("Personal agent files already match.")
         return
-    state = Path(os.environ.get("XDG_STATE_HOME", home / ".local/state")) / "agents/backups"
+    state = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state")
+    if not state.is_absolute():
+        state = home / ".local/state"
+    state /= "agents/backups"
     state.mkdir(parents=True, exist_ok=True)
     backup = Path(tempfile.mkdtemp(prefix="install-", dir=state))
     for target, _, _ in changes:

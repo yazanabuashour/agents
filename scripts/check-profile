@@ -8,7 +8,11 @@ from urllib.parse import unquote, urlsplit
 import yaml
 
 root = Path(__file__).resolve().parent.parent
+if (root / "skills").is_symlink():
+    raise SystemExit(f"Do not vendor source symlinks: {root / 'skills'}")
 for skill in sorted((root / "skills").iterdir()):
+    if skill.is_symlink():
+        raise SystemExit(f"Do not vendor source symlinks: {skill}")
     path = skill / "SKILL.md"
     text = path.read_text()
     parts = text.split("---", 2)
@@ -38,7 +42,12 @@ for name in sources:
     elif source.suffix in (".yaml", ".yml"):
         yaml.safe_load(source.read_text())
     elif source.suffix == ".md":
-        for link in re.findall(r"\[[^\]\n]*\]\(([^\s)]+)\)", source.read_text()):
+        links = re.findall(
+            r'''\[[^\]\n]*\]\(\s*(?:<([^>\n]*)>|([^\s)]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^\n)]*\)))?\s*\)''',
+            source.read_text(),
+        )
+        for angled, bare in links:
+            link = angled or bare
             target = urlsplit(link)
             if target.scheme or target.netloc or not target.path:
                 continue

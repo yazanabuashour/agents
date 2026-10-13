@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+source = Path(__file__).resolve().parent.parent
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary) / "source"
+    (root / "scripts").mkdir(parents=True)
+    shutil.copy2(source / "scripts/check-profile", root / "scripts/check-profile")
+    shutil.copytree(source / "instructions", root / "instructions", symlinks=True)
+    shutil.copytree(source / "skills/technical-writing", root / "skills/technical-writing", symlinks=True)
+    environment = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    for key in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_TEMPLATE_DIR"):
+        environment.pop(key, None)
+    subprocess.run(["git", "init", "--quiet", str(root)], env=environment, check=True)
+    document = root / "document.md"
+    existing = root / "existing file.md"
+    existing.write_text("# Existing file\n")
+
+    def check():
+        return subprocess.run([sys.executable, "-B", str(root / "scripts/check-profile")],
+                              env=environment, capture_output=True, text=True)
+
+    document.write_text('[Existing](<existing file.md> "A title")\n')
+    result = check()
+    assert result.returncode == 0, result.stderr
+    document.write_text('[Missing](missing.md "A title")\n')
+    result = check()
+    assert result.returncode != 0 and "Missing local link target" in result.stderr
+    document.write_text("# Document\n")
+    skill = root / "skills/technical-writing"
+    saved = Path(temporary) / "skill"
+    skill.rename(saved)
+    skill.symlink_to(saved, target_is_directory=True)
+    result = check()
+    assert result.returncode != 0 and "Do not vendor source symlinks" in result.stderr
+print("Profile validator tests passed.")
