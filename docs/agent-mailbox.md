@@ -14,7 +14,9 @@ requires private-beta access and full-access credentials. The helper checks draf
 filter previews. Authentication stays with the stock CLI, through its profile or
 `RESEND_API_KEY`.
 
-Create a private JSON file outside any Git checkout, with mode `0600`:
+Create a private JSON file outside any Git checkout, with mode `0600`. The helper
+validates the object, required fields, and command-specific settings before opening
+state or contacting Resend. Invalid settings report a JSON error with exit `1`:
 
 ```json
 {

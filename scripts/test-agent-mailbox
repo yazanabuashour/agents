@@ -49,6 +49,46 @@ class MailboxTests(unittest.TestCase):
         mocking.start()
         self.addCleanup(mocking.stop)
 
+    def test_cli_rejects_invalid_config_before_state_or_provider_work(self):
+        root = Path(self.temporary.name)
+        config_file = root / "config.json"
+        marker = root / "provider-called"
+        provider = root / "resend"
+        provider.write_text(f"#!/bin/sh\nprintf called > '{marker}'\nexit 99\n")
+        provider.chmod(0o755)
+        environment = {**mailbox.os.environ, "PATH": str(root) + mailbox.os.pathsep + mailbox.os.environ["PATH"]}
+        minimal = {"inbox_id": INBOX, "state_dir": self.config["state_dir"]}
+        cases = [
+            ([], "pending", "JSON object"),
+            ({**minimal, "inbox_id": 7}, "pending", "inbox_id"),
+            ({**minimal, "state_dir": None}, "pending", "state_dir"),
+            ({**minimal, "profile": False}, "pending", "profile"),
+            (minimal, "export", "download_timeout_seconds"),
+            ({**minimal, "download_timeout_seconds": []}, "export", "download_timeout_seconds"),
+            ({**minimal, "download_timeout_seconds": "NaN"}, "export", "download_timeout_seconds"),
+            ({**minimal, "download_timeout_seconds": 0}, "export", "download_timeout_seconds"),
+            ({**minimal, "download_timeout_seconds": True}, "export", "download_timeout_seconds"),
+            (self.config, "run", "archive_dir"),
+            ({**self.config, "archive_dir": str(root / "archives"), "archive_copy": "invalid"}, "run", "archive_copy"),
+        ]
+        for config, command, error in cases:
+            with self.subTest(command=command, config=config):
+                config_file.write_text(mailbox.encode(config))
+                arguments = [command] + (["--output", str(root / "archive")] if command == "export" else [])
+                result = mailbox.subprocess.run([mailbox.sys.executable, "-B", mailbox.__file__,
+                                                  "--config", str(config_file), *arguments],
+                                                 env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(error, mailbox.json.loads(result.stderr)["error"])
+                self.assertFalse(Path(self.config["state_dir"]).exists())
+                self.assertFalse(marker.exists())
+        config_file.write_text(mailbox.encode(minimal))
+        result = mailbox.subprocess.run([mailbox.sys.executable, "-B", mailbox.__file__,
+                                          "--config", str(config_file), "pending"],
+                                         env=environment, capture_output=True, text=True, check=True)
+        self.assertEqual(mailbox.json.loads(result.stdout), {"pending": []})
+        self.assertFalse(marker.exists())
+
     def test_review_send_and_restart_do_not_duplicate(self):
         with mailbox.state(self.config) as db:
             mailbox.review(self.config, db, DRAFT, "logical-action")

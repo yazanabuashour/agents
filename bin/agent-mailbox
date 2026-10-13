@@ -33,6 +33,8 @@ def digest(value):
 
 
 def identifier(value):
+    if not isinstance(value, str):
+        raise ValueError("Expected a UUID string")
     return str(uuid.UUID(value))
 
 
@@ -364,10 +366,19 @@ def verify(root):
             "limits": manifest["limits"]}
 
 
+def download_timeout(config):
+    try:
+        value = config["download_timeout_seconds"]
+        timeout = float(value)
+        if isinstance(value, bool) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ValueError("download_timeout_seconds must be a measured positive inactivity timeout") from None
+    return timeout
+
+
 def export(config, destination):
-    timeout = float(config["download_timeout_seconds"])
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("download_timeout_seconds must be a measured positive inactivity timeout")
+    timeout = download_timeout(config)
     root = outside_git(destination)
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     manifest = {"format": 1, "inbox_id": config["inbox_id"], "files": [], "gaps": [],
@@ -516,6 +527,33 @@ def run(config, db):
     return result
 
 
+def load_config(path, command):
+    config = json.loads(outside_git(path).read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Config must be a JSON object")
+    try:
+        config["inbox_id"] = identifier(config.get("inbox_id"))
+    except ValueError:
+        raise ValueError("inbox_id must be a UUID string") from None
+    directory = config.get("state_dir")
+    if not isinstance(directory, str) or not Path(directory).is_absolute():
+        raise ValueError("state_dir must be an absolute private path")
+    outside_git(directory)
+    profile = config.get("profile")
+    if profile is not None and (not isinstance(profile, str) or profile.startswith("-")):
+        raise ValueError("Invalid CLI profile")
+    if command in ("run", "export"):
+        download_timeout(config)
+    if command == "run":
+        archive = config.get("archive_dir")
+        if not isinstance(archive, str) or not archive.strip():
+            raise ValueError("archive_dir must be a private path")
+        outside_git(archive)
+        if config.get("archive_copy"):
+            copy_destination(config["archive_copy"])
+    return config
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -542,12 +580,7 @@ def main():
         return
     if not args.config:
         parser.error("--config is required except for verify")
-    config = json.loads(outside_git(args.config).read_text())
-    config["inbox_id"] = identifier(config["inbox_id"])
-    if not Path(config["state_dir"]).is_absolute():
-        raise ValueError("state_dir must be an absolute private path")
-    if config.get("profile") and (not isinstance(config["profile"], str) or config["profile"].startswith("-")):
-        raise ValueError("Invalid CLI profile")
+    config = load_config(args.config, args.command)
     with state(config) as db:
         if args.command == "doctor":
             result = doctor(config)
