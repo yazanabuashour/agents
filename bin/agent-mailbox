@@ -54,7 +54,12 @@ def cli(config, *args, help_text=False):
                             capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(f"Resend command failed (exit {result.returncode}); inspect it privately")
-    return result.stdout if help_text else json.loads(result.stdout)
+    if help_text:
+        return result.stdout
+    response = json.loads(result.stdout)
+    if not isinstance(response, dict):
+        raise ValueError("Expected a Resend JSON object")
+    return response
 
 
 def page(config, args, cursor=None):
@@ -63,6 +68,8 @@ def page(config, args, cursor=None):
         raise ValueError("Unexpected paginated response; refusing to mark discovery complete")
     rows = result["data"]
     for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Paginated records must be JSON objects")
         identifier(row["id"])
     if result["has_more"] and (not rows or rows[-1]["id"] == cursor):
         raise ValueError("Pagination did not advance")
@@ -299,6 +306,8 @@ def without_urls(value):
 
 
 def download(url, target, expected_size=None, timeout=None):
+    if not isinstance(url, str):
+        raise ValueError("Expected a provider-generated HTTPS download URL")
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.port not in (None, 443):
         raise ValueError("Expected a provider-generated HTTPS download URL")
@@ -371,6 +380,8 @@ def verify(root):
         relative = Path(record["path"])
         if relative.is_absolute() or ".." in relative.parts or str(relative) in listed:
             raise ValueError("Unsafe or duplicate manifest path")
+        if type(record.get("bytes")) is not int or record["bytes"] < 0:
+            raise ValueError("Manifest file sizes must be nonnegative integers")
         listed.add(str(relative))
         path = root / relative
         if not path.resolve().is_relative_to(root) or path.is_symlink() or not path.is_file():
@@ -468,14 +479,17 @@ def export(config, destination):
         except (RuntimeError, ValueError, KeyError, OSError) as error:
             gap(prefix + "/provider", error)
             return
-        raw = (public.get("raw") or {}).get("download_url")
-        if raw:
-            try:
-                fetch_bytes(prefix + "/message.eml", raw)
-            except (RuntimeError, ValueError, OSError) as error:
-                gap(prefix + "/raw", error)
-        elif email["direction"] == "inbound":
-            gap(prefix + "/raw-unavailable", ValueError())
+        try:
+            raw = public.get("raw")
+            if raw is not None and not isinstance(raw, dict):
+                raise ValueError("Raw download metadata must be an object or null")
+            url = raw.get("download_url") if raw is not None else None
+            if url is not None:
+                fetch_bytes(prefix + "/message.eml", url)
+            elif email["direction"] == "inbound":
+                gap(prefix + "/raw-unavailable", ValueError())
+        except (RuntimeError, ValueError, OSError) as error:
+            gap(prefix + "/raw", error)
         found = set()
         try:
             for attachment in pages(config, args + ["attachments", email_id]):
@@ -489,7 +503,10 @@ def export(config, destination):
                     fetch_bytes(relative + ".bin", attachment["download_url"], attachment.get("size"))
                 except (RuntimeError, ValueError, KeyError, OSError) as error:
                     gap(relative, error)
-            if not {identifier(a["id"]) for a in email["attachments"]}.issubset(found):
+            native_attachments = email["attachments"]
+            if not isinstance(native_attachments, list) or any(not isinstance(a, dict) for a in native_attachments):
+                raise ValueError("Native attachments must be a list of objects")
+            if not {identifier(a["id"]) for a in native_attachments}.issubset(found):
                 raise ValueError("Native attachments missing from public listing")
         except (RuntimeError, ValueError, KeyError, OSError) as error:
             gap(prefix + "/attachments", error)
@@ -561,7 +578,10 @@ def run(config, db):
 
 
 def load_config(path, command):
-    config = json.loads(outside_git(path).read_text())
+    path = outside_git(path)
+    if not path.is_file():
+        raise ValueError("Config must be a regular file")
+    config = json.loads(path.read_text())
     if not isinstance(config, dict):
         raise ValueError("Config must be a JSON object")
     try:
