@@ -16,6 +16,7 @@ machine settings. Upstream tools own their CLI guides and implementations.
 | `instructions/AGENTS.md` | `~/.agents/AGENTS.md` | Always-loaded personal baseline through each agent's loading link |
 | `skills/<name>/` | `~/.agents/skills/<name>/` | Conditional instructions and supporting files |
 | `bin/checkpoint-review` | `~/.local/bin/checkpoint-review` | Explicit source-delta review command |
+| `bin/agent-mailbox` | `~/.local/bin/agent-mailbox` | Durable mailbox discovery and reviewed native draft sends |
 
 The repository's root `AGENTS.md` governs work on this checkout; it is not the
 exported baseline. The installer copies only its source files and owns neither
@@ -41,6 +42,7 @@ provide missing tools, or enforce model behavior.
 | `todoist` | Authenticated stock `td` CLI; consult its command help |
 | `agent-browser` | Stock CLI, personal persistent-profile configuration, pinned tabs, and an available credential store |
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
+| `agent-mailbox` | Linux, Python 3, official Resend CLI with native Inboxes capabilities, full-access credentials, and private-beta access |
 | `technical-writing` | No executable workflow dependency |
 
 See the [notes skill](../skills/notes/SKILL.md) for canonical repository access,

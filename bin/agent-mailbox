@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Durable discovery and reviewed native drafts using the official Resend CLI."""
+
+import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import stat
+import subprocess
+import sys
+import uuid
+
+
+def encode(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def digest(value):
+    return hashlib.sha256(encode(value).encode()).hexdigest()
+
+
+def identifier(value):
+    return str(uuid.UUID(value))
+
+
+def outside_git(path):
+    path = Path(path).expanduser().resolve()
+    if any((parent / ".git").is_file() or (parent / ".git/HEAD").is_file()
+           for parent in (path, *path.parents)):
+        raise ValueError("Config, state, and archives must be outside Git checkouts")
+    return path
+
+
+def cli(config, *args, help_text=False):
+    command = ["resend", "--json"]
+    if config.get("profile"):
+        command += ["--profile", config["profile"]]
+    result = subprocess.run(command + list(args), stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise RuntimeError(f"Resend command failed (exit {result.returncode}); inspect it privately")
+    return result.stdout if help_text else json.loads(result.stdout)
+
+
+def page(config, args, cursor=None):
+    result = cli(config, *args, "--limit", "100", *(["--after", cursor] if cursor else []))
+    if not isinstance(result.get("data"), list) or type(result.get("has_more")) is not bool:
+        raise ValueError("Unexpected paginated response; refusing to mark discovery complete")
+    rows = result["data"]
+    for row in rows:
+        identifier(row["id"])
+    if result["has_more"] and (not rows or rows[-1]["id"] == cursor):
+        raise ValueError("Pagination did not advance")
+    return rows, rows[-1]["id"] if result["has_more"] else None
+
+
+@contextmanager
+def state(config):
+    directory = outside_git(config["state_dir"])
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    for name in ("lock", "state.sqlite3", "state.sqlite3-journal", "state.sqlite3-wal", "state.sqlite3-shm"):
+        path = directory / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("State files must be regular files, never symlinks")
+        outside_git(path)
+    descriptor = os.open(directory / "lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "a") as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise ValueError("State lock must be a regular file")
+        os.fchmod(lock.fileno(), 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        connection = sqlite3.connect(directory / "state.sqlite3")
+        try:
+            os.chmod(directory / "state.sqlite3", 0o600)
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS identity (value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS messages
+                    (id TEXT PRIMARY KEY, payload TEXT NOT NULL, acknowledged INTEGER DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS scan (value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS intents
+                    (key TEXT PRIMARY KEY, draft_id TEXT UNIQUE NOT NULL,
+                     snapshot TEXT NOT NULL, status TEXT NOT NULL, result TEXT);
+            """)
+            identity = encode({"inbox_id": config["inbox_id"], "profile": config.get("profile")})
+            existing = connection.execute("SELECT value FROM identity").fetchone()
+            if existing and existing[0] != identity:
+                raise ValueError("State belongs to another inbox/profile; use a separate state directory")
+            if not existing:
+                with connection:
+                    connection.execute("INSERT INTO identity VALUES (?)", (identity,))
+            yield connection
+        finally:
+            connection.close()
+
+
+def pending(db):
+    return [json.loads(row[0]) for row in db.execute(
+        "SELECT payload FROM messages WHERE acknowledged=0 ORDER BY rowid")]
+
+
+def poll(config, db):
+    inbox = config["inbox_id"]
+    row = db.execute("SELECT value FROM scan").fetchone()
+    progress = json.loads(row[0]) if row else {"after": None, "threads": [], "next": None,
+                                               "loaded": False, "email_after": None}
+    while True:
+        if not progress["loaded"]:
+            rows, following = page(config, ["inboxes", "threads", "list", "--inbox_id", inbox,
+                                           "--folders", "inbox", "archive", "spam", "sent", "trash"],
+                                   progress["after"])
+            progress.update(threads=[r["id"] for r in rows], next=following, loaded=True)
+        if progress["threads"]:
+            thread = progress["threads"][0]
+            rows, following = page(config, ["inboxes", "threads", "emails", "list", "--inbox_id", inbox,
+                                           "--thread_id", thread], progress["email_after"])
+            with db:
+                for message in rows:
+                    db.execute("INSERT OR IGNORE INTO messages (id,payload) VALUES (?,?)",
+                               (message["id"], encode({"thread_id": thread, "email": message})))
+                progress["email_after"] = following
+                if following is None:
+                    progress["threads"].pop(0)
+                db.execute("DELETE FROM scan")
+                db.execute("INSERT INTO scan VALUES (?)", (encode(progress),))
+        elif progress["next"]:
+            progress.update(after=progress["next"], loaded=False)
+        else:
+            with db:
+                db.execute("DELETE FROM scan")
+            return {"scan_complete": True, "pending": pending(db)}
+
+
+def snapshot(config, draft_id):
+    draft = cli(config, "inboxes", "drafts", "get", "--inbox_id", config["inbox_id"],
+                "--draft_id", draft_id)
+    inbox = cli(config, "inboxes", "get", config["inbox_id"])
+    if draft.get("id") != draft_id or inbox.get("id") != config["inbox_id"]:
+        raise ValueError("Unexpected draft or inbox identity")
+    if draft.get("email_id"):
+        raise ValueError("Draft already sent; reconcile the existing intent")
+    for field in ("type", "to", "cc", "bcc", "subject", "text", "html", "thread_id", "reply_to_email_id"):
+        if field not in draft:
+            raise ValueError(f"Draft response missing {field}")
+    return {"draft": draft, "sender": {field: inbox[field]
+                                      for field in ("id", "email_address", "from_name")}}
+
+
+def review(config, db, draft_id, key):
+    if not key:
+        raise ValueError("Logical send key must not be empty")
+    current = snapshot(config, draft_id)
+    old = db.execute("SELECT draft_id,status FROM intents WHERE key=?", (key,)).fetchone()
+    if old:
+        if old[1] != "reviewed" or old[0] != draft_id:
+            raise ValueError("Intent already attempted or bound to another draft")
+        with db:
+            db.execute("UPDATE intents SET snapshot=? WHERE key=?", (encode(current), key))
+    else:
+        with db:
+            db.execute("INSERT INTO intents VALUES (?,?,?,'reviewed',NULL)",
+                       (key, draft_id, encode(current)))
+    return {"key": key, "sha256": digest(current), "snapshot": current}
+
+
+def intent(db, key):
+    row = db.execute("SELECT draft_id,snapshot,status,result FROM intents WHERE key=?", (key,)).fetchone()
+    if row is None:
+        raise ValueError("Unknown logical send key; review the draft first")
+    return row
+
+
+def send(config, db, key, reviewed_sha256):
+    draft_id, reviewed, status, result = intent(db, key)
+    if digest(json.loads(reviewed)) != reviewed_sha256:
+        raise ValueError("Stored review changed; inspect a fresh review before sending")
+    if status == "sent":
+        return {"status": status, "result": json.loads(result)}
+    if status != "reviewed":
+        raise ValueError("Attempt outcome is uncertain; reconcile, never blindly resend")
+    help_output = cli(config, "inboxes", "drafts", "send", "--help", help_text=True)
+    if "--idempotency-key" not in help_output:
+        raise ValueError("Official CLI lacks draft idempotency; upgrade to a capable Inboxes preview")
+    if encode(snapshot(config, draft_id)) != reviewed:
+        raise ValueError("Draft or sender changed since review; review the same draft and key again")
+    with db:
+        db.execute("UPDATE intents SET status='attempting' WHERE key=?", (key,))
+    request_key = digest({"inbox": config["inbox_id"], "key": key})
+    try:
+        result = cli(config, "inboxes", "drafts", "send", "--inbox_id", config["inbox_id"],
+                     "--draft_id", draft_id, "--idempotency-key", request_key)
+        if result.get("id") != draft_id or not result.get("email_id") or not result.get("thread_id"):
+            raise ValueError("Unexpected send receipt")
+        identifier(result["email_id"])
+        identifier(result["thread_id"])
+    except Exception:
+        with db:
+            db.execute("UPDATE intents SET status='uncertain' WHERE key=?", (key,))
+        raise RuntimeError("Send outcome uncertain; use reconcile with the same key") from None
+    with db:
+        db.execute("UPDATE intents SET status='sent',result=? WHERE key=?", (encode(result), key))
+    return {"status": "sent", "result": result}
+
+
+def reconcile(config, db, key):
+    draft_id, _, status, saved = intent(db, key)
+    if status == "sent":
+        return {"status": status, "result": json.loads(saved)}
+    draft = cli(config, "inboxes", "drafts", "get", "--inbox_id", config["inbox_id"],
+                "--draft_id", draft_id)
+    if draft.get("id") != draft_id:
+        raise ValueError("Unexpected draft identity")
+    if draft.get("email_id") and draft.get("thread_id"):
+        identifier(draft["email_id"])
+        identifier(draft["thread_id"])
+        receipt = {"id": draft_id, "email_id": draft["email_id"], "thread_id": draft["thread_id"],
+                   "evidence": "native draft reports sent; may have been sent in the human UI"}
+        with db:
+            db.execute("UPDATE intents SET status='sent',result=? WHERE key=?", (encode(receipt), key))
+        return {"status": "sent", "result": receipt}
+    return {"status": status, "evidence": "No sent receipt; this does not prove the request failed"}
+
+
+def doctor(config):
+    checks = {}
+    for name, args, required in [
+        ("draft_idempotency", ["inboxes", "drafts", "send", "--help"], "--idempotency-key"),
+        ("folder_filter", ["inboxes", "threads", "list", "--help"], "--folders")]:
+        checks[name] = required in cli(config, *args, help_text=True)
+    inbox = cli(config, "inboxes", "get", config["inbox_id"])
+    checks["inbox_access"] = inbox.get("id") == config["inbox_id"]
+    if not all(checks.values()):
+        raise ValueError("Inboxes capability check failed; verify beta access, full-access key, and CLI preview")
+    return checks
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, help="Trusted private JSON: inbox_id, state_dir, optional profile")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("doctor", "poll", "pending"):
+        commands.add_parser(name)
+    commands.add_parser("restart-discovery", help="Clear only scan cursors after a stuck traversal; retained mail may be missed")
+    commands.add_parser("ack").add_argument("email_id", type=identifier)
+    command = commands.add_parser("review", help="Snapshot native draft; this does not grant send authority")
+    command.add_argument("draft_id", type=identifier)
+    command.add_argument("key", help="Stable logical action key, reused across restarts")
+    command = commands.add_parser("send", help="Send only under existing user authority")
+    command.add_argument("key")
+    command.add_argument("--review-sha256", required=True, help="SHA-256 from the snapshot this caller inspected")
+    command.add_argument("--authorized", action="store_true", required=True)
+    commands.add_parser("reconcile").add_argument("key")
+    args = parser.parse_args()
+    config = json.loads(outside_git(args.config).read_text())
+    config["inbox_id"] = identifier(config["inbox_id"])
+    if not Path(config["state_dir"]).is_absolute():
+        raise ValueError("state_dir must be an absolute private path")
+    if config.get("profile") and (not isinstance(config["profile"], str) or config["profile"].startswith("-")):
+        raise ValueError("Invalid CLI profile")
+    with state(config) as db:
+        if args.command == "doctor":
+            result = doctor(config)
+        elif args.command == "poll":
+            result = poll(config, db)
+        elif args.command == "pending":
+            result = {"pending": pending(db)}
+        elif args.command == "restart-discovery":
+            with db:
+                db.execute("DELETE FROM scan")
+            result = {"discovery_restarted": True, "limit": "Interrupted traversal gap; deleted mail cannot be recovered"}
+        elif args.command == "ack":
+            with db:
+                changed = db.execute("UPDATE messages SET acknowledged=1 WHERE id=?", (args.email_id,)).rowcount
+            if not changed:
+                raise ValueError("Unknown email ID")
+            result = {"acknowledged": args.email_id}
+        elif args.command == "review":
+            result = review(config, db, args.draft_id, args.key)
+        elif args.command == "send":
+            result = send(config, db, args.key, args.review_sha256)
+        else:
+            result = reconcile(config, db, args.key)
+    print(encode(result))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, OSError, RuntimeError, sqlite3.Error) as error:
+        print(encode({"error": str(error)}), file=sys.stderr)
+        sys.exit(1)

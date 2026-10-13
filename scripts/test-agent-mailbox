@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Offline protection for durable mailbox state and uncertain sends."""
+
+from copy import deepcopy
+import importlib.machinery
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+loader = importlib.machinery.SourceFileLoader("mailbox", str(Path(__file__).resolve().parent.parent / "bin/agent-mailbox"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mailbox = importlib.util.module_from_spec(spec)
+loader.exec_module(mailbox)
+INBOX, DRAFT, THREAD, EMAIL, OTHER = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1, 6)]
+
+
+class MailboxTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(self.temporary.cleanup)
+        self.config = {"inbox_id": INBOX, "state_dir": self.temporary.name + "/state"}
+        self.draft = dict(id=DRAFT, type="standalone", to=["reader@example.test"], cc=[], bcc=[],
+                          subject="Synthetic", text="Reviewed body", html=None, thread_id=None,
+                          reply_to_email_id=None, email_id=None, updated_at="synthetic-version-1")
+        self.calls = []
+        self.failure = None
+
+        def cli(config, *args, help_text=False):
+            self.calls.append(args)
+            if help_text:
+                return "--idempotency-key --folders"
+            if args[:2] == ("inboxes", "get"):
+                return dict(id=INBOX, email_address="mailbox@example.test", from_name="Synthetic sender")
+            if args[:3] == ("inboxes", "drafts", "get"):
+                return deepcopy(self.draft)
+            if args[:3] == ("inboxes", "drafts", "send"):
+                with mailbox.sqlite3.connect(Path(config["state_dir"]) / "state.sqlite3") as db:
+                    assert db.execute("SELECT status FROM intents").fetchone()[0] == "attempting"
+                if self.failure:
+                    raise self.failure
+                return dict(id=DRAFT, thread_id=THREAD, email_id=EMAIL)
+            raise AssertionError(args)
+
+        mocking = patch.object(mailbox, "cli", cli)
+        mocking.start()
+        self.addCleanup(mocking.stop)
+
+    def test_review_send_and_restart_do_not_duplicate(self):
+        with mailbox.state(self.config) as db:
+            mailbox.review(self.config, db, DRAFT, "logical-action")
+            self.assertEqual(mailbox.send(self.config, db, "logical-action", mailbox.digest(mailbox.snapshot(self.config, DRAFT)))["status"], "sent")
+        with mailbox.state(self.config) as db:
+            mailbox.send(self.config, db, "logical-action", mailbox.digest(mailbox.snapshot(self.config, DRAFT)))
+        sends = [call for call in self.calls if call[:3] == ("inboxes", "drafts", "send") and "--help" not in call]
+        self.assertEqual(len(sends), 1)
+        self.assertIn("--idempotency-key", sends[0])
+
+    def test_ui_edit_blocks_send_and_can_be_reviewed_again(self):
+        with mailbox.state(self.config) as db:
+            first = mailbox.review(self.config, db, DRAFT, "action")["sha256"]
+            self.draft["cc"] = ["colleague@example.test"]
+            with self.assertRaisesRegex(ValueError, "changed"):
+                mailbox.send(self.config, db, "action", first)
+            second = mailbox.review(self.config, db, DRAFT, "action")["sha256"]
+            with self.assertRaisesRegex(ValueError, "Stored review changed"):
+                mailbox.send(self.config, db, "action", first)
+            with self.assertRaises(mailbox.sqlite3.IntegrityError):
+                mailbox.review(self.config, db, DRAFT, "another-key")
+            mailbox.send(self.config, db, "action", second)
+
+    def test_timeout_and_process_death_block_retry(self):
+        for failure in (RuntimeError("timeout"), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory(dir="/tmp") as directory:
+                config = {**self.config, "state_dir": directory + "/state"}
+                with mailbox.state(config) as db:
+                    mailbox.review(config, db, DRAFT, "action")
+                    self.failure = failure
+                    with self.assertRaises((RuntimeError, KeyboardInterrupt)):
+                        mailbox.send(config, db, "action", mailbox.digest(mailbox.snapshot(config, DRAFT)))
+                with mailbox.state(config) as db:
+                    with self.assertRaisesRegex(ValueError, "uncertain"):
+                        mailbox.send(config, db, "action", mailbox.digest(mailbox.snapshot(config, DRAFT)))
+                    self.assertNotEqual(mailbox.reconcile(config, db, "action")["status"], "sent")
+                    self.draft.update(email_id=EMAIL, thread_id=THREAD)
+                    self.assertEqual(mailbox.reconcile(config, db, "action")["status"], "sent")
+                self.draft.update(email_id=None, thread_id=None)
+
+    def test_discovery_resumes_message_cursor_and_preserves_pending(self):
+        failed = False
+        calls = []
+
+        def pages(config, args, cursor=None):
+            nonlocal failed
+            calls.append((args, cursor))
+            if args[2] == "list":
+                return [{"id": THREAD}], None
+            if cursor is None:
+                return [{"id": EMAIL, "text": "Untrusted synthetic inbound"}], EMAIL
+            if not failed:
+                failed = True
+                raise RuntimeError("interrupted")
+            return [{"id": OTHER, "text": "Second page"}], None
+
+        with patch.object(mailbox, "page", pages):
+            with mailbox.state(self.config) as db:
+                with self.assertRaises(RuntimeError):
+                    mailbox.poll(self.config, db)
+                self.assertEqual(len(mailbox.pending(db)), 1)
+                mailbox.review(self.config, db, DRAFT, "preserved-intent")
+            with mailbox.state(self.config) as db:
+                mailbox.poll(self.config, db)
+                self.assertEqual(calls[3][1], EMAIL)
+                self.assertEqual(len(mailbox.pending(db)), 2)
+                with db:
+                    db.execute("UPDATE messages SET acknowledged=1 WHERE id=?", (EMAIL,))
+                mailbox.poll(self.config, db)
+                self.assertEqual(len(mailbox.pending(db)), 1)
+                with db:
+                    db.execute("INSERT INTO scan VALUES (?)", ('{"deleted-thread":"synthetic"}',))
+            config_file = Path(self.temporary.name) / "config.json"
+            config_file.write_text(mailbox.encode(self.config))
+            mailbox.subprocess.run(["python3", "-B", str(Path(mailbox.__file__)), "--config", str(config_file),
+                                    "restart-discovery"], check=True, capture_output=True)
+            with mailbox.state(self.config) as db:
+                self.assertIsNone(db.execute("SELECT value FROM scan").fetchone())
+                self.assertEqual(len(mailbox.pending(db)), 1)
+                self.assertEqual(mailbox.intent(db, "preserved-intent")[2], "reviewed")
+
+    def test_state_cannot_be_shared_by_another_inbox(self):
+        with mailbox.state(self.config):
+            pass
+        with self.assertRaisesRegex(ValueError, "another inbox"):
+            with mailbox.state({**self.config, "inbox_id": OTHER}):
+                pass
+
+    def test_state_symlink_is_rejected_without_touching_target(self):
+        target = Path(self.temporary.name) / "unrelated"
+        target.write_text("Preserve this file")
+        before = target.stat().st_mode
+        directory = Path(self.config["state_dir"])
+        directory.mkdir()
+        for name in ("lock", "state.sqlite3"):
+            with self.subTest(name=name):
+                link = directory / name
+                link.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, "never symlinks"):
+                    with mailbox.state(self.config):
+                        pass
+                self.assertEqual(target.read_text(), "Preserve this file")
+                self.assertEqual(target.stat().st_mode, before)
+                link.unlink()
+
+
+if __name__ == "__main__":
+    unittest.main()

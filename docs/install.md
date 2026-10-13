@@ -25,7 +25,7 @@ scripts/install-local --apply
 ```
 
 The installer backs up changed existing files and installs copies into `~/.agents`
-and `~/.local/bin/checkpoint-review`. It refuses symlink targets and does not delete
+and the helpers in `~/.local/bin`. It refuses symlink targets and does not delete
 unrelated skills. Read [workflow dependencies](reference.md) before invoking a skill.
 
 ## Connect your agents
@@ -41,7 +41,7 @@ ln -sT ../../.agents/AGENTS.md "$HOME/.pi/agent/AGENTS.md"
 ln -sT ../.agents/AGENTS.md "$HOME/.codex/AGENTS.md"
 ln -sT ../../.agents/AGENTS.md "$HOME/.claude/rules/personal.md"
 
-for skill in agent-browser checkpoint-review notes technical-writing todoist; do
+for skill in agent-browser agent-mailbox checkpoint-review notes technical-writing todoist; do
   ln -sT "../../.agents/skills/$skill" "$HOME/.claude/skills/$skill"
 done
 ```
