@@ -11,6 +11,14 @@ import stat
 import tempfile
 
 
+INSTRUCTION_LINKS = {
+    ".pi/agent/AGENTS.md": "../../.agents/AGENTS.md",
+    ".codex/AGENTS.md": "../.agents/AGENTS.md",
+    ".claude/rules/personal.md": "../../.agents/AGENTS.md",
+    ".config/opencode/AGENTS.md": "../../.agents/AGENTS.md",
+}
+
+
 def fail(message):
     raise SystemExit(message)
 
@@ -31,7 +39,7 @@ def fingerprint(path):
     if not path.exists():
         return None
     if not path.is_file():
-        fail(f"Target must be a regular file or skill link: {path}")
+        fail(f"Target must be a regular file or profile link: {path}")
     return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "mode": stat.S_IMODE(path.stat().st_mode)}
 
@@ -48,12 +56,14 @@ def relative_parts(name):
 
 
 def file_path(parts):
-    return (parts == (".agents", "AGENTS.md") or
+    return (parts in ((".agents", "AGENTS.md"), (".codex", "minimal-codex.md")) or
             (len(parts) >= 4 and parts[:2] == (".agents", "skills")) or
             (len(parts) == 3 and parts[:2] == (".local", "bin")))
 
 
 def link_target(name):
+    if name in INSTRUCTION_LINKS:
+        return INSTRUCTION_LINKS[name]
     return f"../../.agents/skills/{PurePosixPath(name).name}"
 
 
@@ -90,7 +100,7 @@ def read_receipt(path):
                      and isinstance(entry["sha256"], str)
                      and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
                      and type(entry["mode"]) is int and entry["mode"] in (0o600, 0o644, 0o755))
-        elif len(parts) == 3 and parts[:2] == (".claude", "skills"):
+        elif name in INSTRUCTION_LINKS or (len(parts) == 3 and parts[:2] == (".claude", "skills")):
             valid = entry == {"target": link_target(name)}
         else:
             valid = False
@@ -124,9 +134,12 @@ def atomic_write(target, content, mode):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Preview profile copies, Claude skill links, and ownership cleanup; --apply installs."
+        description="Preview profile copies, harness instruction links, Claude skill links, and ownership cleanup; --apply installs."
     )
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--adopt-instruction-links", action="store_true",
+                        help="Record ownership of existing instruction links with the exact expected targets; "
+                             "retire the previous owner's declarations first.")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     home = Path.home()
@@ -153,7 +166,10 @@ def main():
         if source.is_symlink():
             fail(f"Source must not be a symlink: {source}")
     exported = sorted(path.parent for path in (root / "skills").glob("*/SKILL.md") if path.is_file())
-    files = [(root / "instructions/AGENTS.md", ".agents/AGENTS.md", 0o600)]
+    files = [
+        (root / "instructions/AGENTS.md", ".agents/AGENTS.md", 0o600),
+        (root / "instructions/codex.md", ".codex/minimal-codex.md", 0o600),
+    ]
     files.extend(
         (source, str(Path(".agents") / source.relative_to(root)), 0o644)
         for skill in exported for source in sorted(skill.rglob("*")) if source.is_file()
@@ -170,6 +186,8 @@ def main():
         content = source.read_bytes()
         desired[name] = {"sha256": hashlib.sha256(content).hexdigest(), "mode": mode}
         contents[name] = content
+
+    desired.update({name: {"target": target} for name, target in INSTRUCTION_LINKS.items()})
 
     for name, entry in old["paths"].items():
         target = home / name
@@ -216,16 +234,25 @@ def main():
             continue
         if name not in old["paths"] and before is not None:
             if "target" in after:
-                if "target" not in before or (target.parent / before["target"]).resolve() != (
-                    home / ".agents/skills" / target.name
-                ).resolve():
-                    fail(f"Unowned Claude skill path conflicts: {target}. Reconcile it before installing.")
-                print(f"Preserve unowned matching link: {target}")
-                continue
-            if before.get("sha256") != after["sha256"]:
-                fail(f"Unowned file differs: {target}. Save and reconcile it against the source, "
-                     "then move it aside or make it match before installing.")
-            print(f"Record matching profile file: {target}")
+                if name in INSTRUCTION_LINKS:
+                    if before != after:
+                        fail(f"Unowned instruction path conflicts: {target}. Save and reconcile it before installing.")
+                    if not args.adopt_instruction_links:
+                        print(f"Preserve unowned matching instruction link: {target}")
+                        continue
+                    print(f"Record matching instruction link: {target}")
+                else:
+                    if "target" not in before or (target.parent / before["target"]).resolve() != (
+                        home / ".agents/skills" / target.name
+                    ).resolve():
+                        fail(f"Unowned Claude skill path conflicts: {target}. Reconcile it before installing.")
+                    print(f"Preserve unowned matching link: {target}")
+                    continue
+            else:
+                if before.get("sha256") != after["sha256"]:
+                    fail(f"Unowned file differs: {target}. Save and reconcile it against the source, "
+                         "then move it aside or make it match before installing.")
+                print(f"Record matching profile file: {target}")
         owned[name] = after
         if before != after:
             changes.append((name, after))
@@ -275,10 +302,11 @@ def main():
     if receipt_changed:
         print(f"Record ownership: {receipt_path}")
     if not args.apply:
-        print("Preview only. Run scripts/install-local --apply to install this plan.")
+        adoption = " --adopt-instruction-links" if args.adopt_instruction_links else ""
+        print(f"Preview only. Run scripts/install-local{adoption} --apply to install this plan.")
         return
     if not changes and not trimmed and not receipt_changed:
-        print("Personal agent files and Claude links already match.")
+        print("Personal agent files and harness links already match.")
         return
 
     state.mkdir(parents=True, exist_ok=True)
@@ -301,13 +329,13 @@ def main():
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             if "target" in after:
-                target.symlink_to(after["target"], target_is_directory=True)
+                target.symlink_to(after["target"], target_is_directory=name not in INSTRUCTION_LINKS)
             else:
                 atomic_write(target, contents[name], after["mode"])
     for name in trimmed:
         (home / name).rmdir()
     atomic_write(receipt_path, (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode(), 0o600)
-    print("Installed personal agent files and Claude links. Existing sessions were not reloaded.")
+    print("Installed personal agent files and harness links. Existing sessions were not reloaded.")
 
 
 if __name__ == "__main__":

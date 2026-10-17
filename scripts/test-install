@@ -29,6 +29,19 @@ with tempfile.TemporaryDirectory() as temporary:
     (claude / "synced-skill/SKILL.md").write_text("Synced independently\n")
     baseline = home / ".agents/AGENTS.md"
     baseline.write_text("Earlier personal policy\n")
+    instruction_links = {
+        ".pi/agent/AGENTS.md": "../../.agents/AGENTS.md",
+        ".codex/AGENTS.md": "../.agents/AGENTS.md",
+        ".claude/rules/personal.md": "../../.agents/AGENTS.md",
+        ".config/opencode/AGENTS.md": "../../.agents/AGENTS.md",
+    }
+    existing_instruction = home / ".pi/agent/AGENTS.md"
+    existing_instruction.parent.mkdir(parents=True)
+    existing_instruction.symlink_to(instruction_links[".pi/agent/AGENTS.md"])
+    for name in (".config/opencode/opencode.json", ".claude/rules/external.md"):
+        target = home / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("Application-owned content\n")
     outside = Path(temporary) / "application-skill"
     outside.mkdir()
     (outside / "SKILL.md").write_text("Application-owned skill\n")
@@ -98,6 +111,46 @@ with tempfile.TemporaryDirectory() as temporary:
     receipt = json.loads(receipt_path.read_text())
     assert receipt_path.stat().st_mode & 0o777 == 0o600
     assert ".agents/AGENTS.md" in receipt["paths"]
+    codex_prompt = home / ".codex/minimal-codex.md"
+    assert codex_prompt.read_bytes() == (root / "instructions/codex.md").read_bytes()
+    assert codex_prompt.stat().st_mode & 0o777 == 0o600
+    assert ".pi/agent/AGENTS.md" not in receipt["paths"]
+    for name, target in instruction_links.items():
+        link = home / name
+        assert os.readlink(link) == target
+        assert link.resolve() == baseline
+        if link != existing_instruction:
+            assert receipt["paths"][name] == {"target": target}
+
+    existing_instruction.unlink()
+    for conflict in ("file", "directory", "link"):
+        if conflict == "file":
+            existing_instruction.write_bytes(baseline.read_bytes())
+        elif conflict == "directory":
+            existing_instruction.mkdir()
+        else:
+            existing_instruction.symlink_to("missing-instructions")
+        run("--apply", "--adopt-instruction-links", error="instruction path conflicts" if conflict != "directory"
+            else "Target must be a regular file or profile link")
+        if conflict == "directory":
+            existing_instruction.rmdir()
+        else:
+            existing_instruction.unlink()
+    existing_instruction.symlink_to(instruction_links[".pi/agent/AGENTS.md"])
+    instruction_inode = existing_instruction.lstat().st_ino
+    assert "Record matching instruction link" in run("--adopt-instruction-links").stdout
+    run("--apply", "--adopt-instruction-links")
+    assert existing_instruction.lstat().st_ino == instruction_inode
+    receipt = json.loads(receipt_path.read_text())
+    for name, target in instruction_links.items():
+        assert receipt["paths"][name] == {"target": target}
+    existing_instruction.unlink()
+    existing_instruction.symlink_to(baseline)
+    run("--apply", error="Local modification conflicts")
+    existing_instruction.unlink()
+    run("--apply")
+    assert os.readlink(existing_instruction) == instruction_links[".pi/agent/AGENTS.md"]
+    assert "already match" in run("--apply", "--adopt-instruction-links").stdout
     assert ".claude/skills/omarchy" not in receipt["paths"]
     assert ".claude/skills/diagnose-crash" not in receipt["paths"]
     assert os.readlink(claude / "omarchy") == "../../.agents/skills/omarchy"
@@ -122,7 +175,8 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not (claude / "siftwire").exists()
     assert not (claude / "builtin").exists()
     preserved = {name: value for name, value in snapshot(home).items() if name.startswith(
-        (".codex/", ".local/share/siftwire/", ".claude/skills/synced-skill", ".claude/skills/stale-external")
+        (".codex/", ".config/opencode/opencode.json", ".claude/rules/external.md",
+         ".local/share/siftwire/", ".claude/skills/synced-skill", ".claude/skills/stale-external")
     )}
     before = snapshot(home)
     assert "already match" in run("--apply").stdout
@@ -213,6 +267,8 @@ with tempfile.TemporaryDirectory() as temporary:
         {**original, "paths": {".ssh/config": {"sha256": "0" * 64, "mode": 0o600}}},
         {**original, "paths": {".agents/AGENTS.md": {"sha256": "invalid", "mode": 0o600}}},
         {**original, "paths": {".claude/skills/notes": {"target": str(outside)}}},
+        {**original, "paths": {".config/opencode/AGENTS.md": {"target": str(outside)}}},
+        {**original, "paths": {".claude/CLAUDE.md": {"target": "../.agents/AGENTS.md"}}},
         {**original, "directories": [".claude/skills"]},
         {**original, "directories": [".agents/skills/../escape"]},
         {**original, "directories": [".agents/skills/notes", ".agents/skills/notes"]},
@@ -225,7 +281,8 @@ with tempfile.TemporaryDirectory() as temporary:
     run("--apply", error="Duplicate receipt key")
     receipt_path.write_bytes(original_receipt)
 
-    for target in (baseline, shared / "notes", claude, receipt_path, receipt_path.parent / "backups"):
+    for target in (baseline, codex_prompt, shared / "notes", claude, home / ".pi/agent",
+                   receipt_path, receipt_path.parent / "backups"):
         saved = target.with_name(target.name + ".saved")
         target.rename(saved)
         target.symlink_to(saved, target_is_directory=saved.is_dir())
@@ -252,7 +309,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     (shared / "synced-skill").mkdir()
     (shared / "synced-skill/SKILL.md").write_text("Shared, not synced\n")
-    run("--apply", error="Target must be a regular file or skill link")
+    run("--apply", error="Target must be a regular file or profile link")
     shutil.rmtree(shared / "synced-skill")
     external_state = Path(temporary) / "external-state"
     environment["XDG_STATE_HOME"] = str(external_state)

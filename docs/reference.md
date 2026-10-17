@@ -14,13 +14,15 @@ machine settings. Upstream tools own their CLI guides and implementations.
 | Source | Installed path | Purpose |
 | --- | --- | --- |
 | `instructions/AGENTS.md` | `~/.agents/AGENTS.md` | Always-loaded personal baseline through each agent's loading link |
+| `instructions/codex.md` | `~/.codex/minimal-codex.md` | Optional Codex base prompt adapted to its native tools |
 | `skills/<name>/SKILL.md` and sibling files | `~/.agents/skills/<name>/` | Conditional instructions and supporting files |
 | `bin/checkpoint-review` | `~/.local/bin/checkpoint-review` | Explicit source-delta review command |
 | `bin/agent-mailbox` | `~/.local/bin/agent-mailbox` | Durable mailbox discovery, reviewed native draft sends, and verified exports |
 
 The repository's root `AGENTS.md` governs work on this checkout; it is not the
-exported baseline. The installer owns profile copies and individual Claude skill
-compatibility links, not whole skills directories or runtime configuration.
+exported baseline. The installer owns profile copies, harness instruction links,
+and individual Claude skill compatibility links, not whole harness directories or
+runtime configuration.
 Application-owned skills keep their original installers and version requirements.
 See [installation and ownership migration](install.md) for receipt and conflict handling.
 

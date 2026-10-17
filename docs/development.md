@@ -19,7 +19,8 @@ scripts/check
 - `scripts/test-profile`: titled and angle-delimited local links and source skill
   symlink refusal in a disposable checkout.
 - Bash syntax, ShellCheck, and shfmt for the shell entry points.
-- `scripts/test-install`: discovery, compatibility links, ownership migration,
+- `scripts/test-install`: discovery, instruction and compatibility links, explicit
+  in-place instruction-link adoption, ownership migration,
   add/rename/retire cleanup, local conflicts, receipt validation, backups,
   idempotence, preview immutability, and symlink refusal in disposable homes.
 - `scripts/test-agent-mailbox`: durable discovery, reviewed and uncertain sends,
