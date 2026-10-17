@@ -49,10 +49,11 @@ for skill in agent-browser agent-mailbox checkpoint-review notes technical-writi
 done
 ```
 
-Pi and Codex discover `~/.agents/skills` directly. Claude Code uses the individual
-links in `~/.claude/skills`; preserve application-owned entries in every skills
-directory. Custom Pi or Codex configuration directories need equivalent links
-under their configured user directories.
+Pi, Codex, and OpenCode discover `~/.agents/skills` directly. Claude Code uses
+individual links in `~/.claude/skills` to the same files; preserve its own entries
+rather than replacing that directory. Keep application-owned shared skills linked
+to their owners and invocation-scoped skills outside global discovery. Do not copy
+skill content into harness-specific directories.
 
 Claude Code reads repository `AGENTS.md` natively when its
 [project-instruction settings](https://code.claude.com/docs/en/memory#agents-md)
