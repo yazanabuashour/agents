@@ -1,98 +1,313 @@
 #!/usr/bin/env python3
 import argparse
 import difflib
+import hashlib
+import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import tempfile
 
 
+def fail(message):
+    raise SystemExit(message)
+
+
+def check_path(path, link=False):
+    for ancestor in reversed(path.parents):
+        if ancestor.is_symlink():
+            fail(f"Refusing to write through a symlink: {ancestor}")
+        if ancestor.exists() and not ancestor.is_dir():
+            fail(f"Target parent must be a directory: {ancestor}")
+    if path.is_symlink() and not link:
+        fail(f"Refusing to write through a symlink: {path}")
+
+
+def fingerprint(path):
+    if path.is_symlink():
+        return {"target": os.readlink(path)}
+    if not path.exists():
+        return None
+    if not path.is_file():
+        fail(f"Target must be a regular file or skill link: {path}")
+    return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "mode": stat.S_IMODE(path.stat().st_mode)}
+
+
+def relative_parts(name):
+    if not isinstance(name, str) or "\x00" in name or "\\" in name:
+        fail(f"Invalid receipt path: {name!r}")
+    parts = PurePosixPath(name).parts
+    if not parts or PurePosixPath(name).is_absolute() or "/".join(parts) != name or any(
+        part in (".", "..") for part in parts
+    ):
+        fail(f"Invalid receipt path: {name!r}")
+    return parts
+
+
+def file_path(parts):
+    return (parts == (".agents", "AGENTS.md") or
+            (len(parts) >= 4 and parts[:2] == (".agents", "skills")) or
+            (len(parts) == 3 and parts[:2] == (".local", "bin")))
+
+
+def link_target(name):
+    return f"../../.agents/skills/{PurePosixPath(name).name}"
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"Duplicate receipt key: {key}")
+        result[key] = value
+    return result
+
+
+def read_receipt(path):
+    check_path(path)
+    if not path.exists():
+        return {"version": 1, "paths": {}, "directories": []}
+    if not path.is_file():
+        fail(f"Receipt must be a regular file: {path}")
+    try:
+        receipt = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    except (ValueError, UnicodeError) as error:
+        fail(f"Invalid receipt {path}: {error}")
+    if (not isinstance(receipt, dict) or set(receipt) != {"version", "paths", "directories"}
+            or type(receipt["version"]) is not int or receipt["version"] != 1
+            or not isinstance(receipt["paths"], dict)
+            or not isinstance(receipt["directories"], list)):
+        fail(f"Invalid receipt schema: {path}")
+    for name, entry in receipt["paths"].items():
+        parts = relative_parts(name)
+        if not isinstance(entry, dict):
+            fail(f"Invalid receipt entry: {name}")
+        if file_path(parts):
+            valid = (set(entry) == {"sha256", "mode"}
+                     and isinstance(entry["sha256"], str)
+                     and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+                     and type(entry["mode"]) is int and entry["mode"] in (0o600, 0o644, 0o755))
+        elif len(parts) == 3 and parts[:2] == (".claude", "skills"):
+            valid = entry == {"target": link_target(name)}
+        else:
+            valid = False
+        if not valid:
+            fail(f"Invalid receipt entry: {name}")
+    seen = set()
+    for name in receipt["directories"]:
+        parts = relative_parts(name)
+        if len(parts) < 3 or parts[:2] != (".agents", "skills") or name in seen:
+            fail(f"Invalid owned directory: {name}")
+        if name in receipt["paths"]:
+            fail(f"Invalid receipt: path is both a file and directory: {name}")
+        seen.add(name)
+    for name in (*receipt["paths"], *seen):
+        if any(str(parent) in receipt["paths"] for parent in PurePosixPath(name).parents):
+            fail(f"Invalid receipt: file is also a parent: {name}")
+    return receipt
+
+
+def atomic_write(target, content, mode):
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            os.fchmod(output.fileno(), mode)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Preview personal agent files; --apply backs up and installs only those files."
+        description="Preview profile copies, Claude skill links, and ownership cleanup; --apply installs."
     )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     home = Path.home()
-    for directory in (root / "instructions", root / "skills", root / "bin"):
-        if directory.is_symlink():
-            raise SystemExit(f"Source must not be a symlink: {directory}")
-    skills = sorted((root / "skills").rglob("*"))
-    helpers = sorted((root / "bin").iterdir())
-    for source in (*skills, *helpers):
-        if source.is_symlink():
-            raise SystemExit(f"Source must not be a symlink: {source}")
-    files = [(root / "instructions/AGENTS.md", home / ".agents/AGENTS.md", 0o600)]
-    files.extend(
-        (source, home / ".agents" / source.relative_to(root), 0o644)
-        for source in skills if source.is_file()
-    )
-    files.extend(
-        (source, home / ".local/bin" / source.name, 0o755)
-        for source in helpers if source.is_file()
-    )
-    changes = []
-    for source, target, mode in files:
-        if source.is_symlink() or not source.is_file():
-            raise SystemExit(f"Source must be a regular file: {source}")
-        for path in (target, *target.parents):
-            if path == home:
-                break
-            if path.is_symlink():
-                raise SystemExit(f"Refusing to write through a symlink: {path}")
-            if path != target and path.exists() and not path.is_dir():
-                raise SystemExit(f"Target parent must be a directory: {path}")
-        if target.exists() and not target.is_file():
-            raise SystemExit(f"Target must be a regular file: {target}")
-        before = target.read_bytes() if target.exists() else b""
-        after = source.read_bytes()
-        old_mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
-        if target.exists() and before == after and old_mode == mode:
-            continue
-        print(f"{target}: mode {oct(old_mode) if old_mode is not None else 'absent'} -> {oct(mode)}")
-        try:
-            before_text, after_text = before.decode(), after.decode()
-        except UnicodeDecodeError:
-            print("Non-UTF-8 content; no text diff. Inspect the source before applying.")
-        else:
-            print("".join(difflib.unified_diff(
-                before_text.splitlines(keepends=True),
-                after_text.splitlines(keepends=True),
-                fromfile=str(target), tofile=str(source),
-            )), end="")
-        changes.append((target, mode, after))
-    if not args.apply:
-        print("Preview only. Run scripts/install-local --apply to install these files.")
-        return
-    if not changes:
-        print("Personal agent files already match.")
-        return
+    if not home.is_absolute():
+        fail("HOME must be an absolute path")
     state = Path(os.environ.get("XDG_STATE_HOME") or home / ".local/state")
     if not state.is_absolute():
         state = home / ".local/state"
-    state /= "agents/backups"
+    state /= "agents"
+    receipt_path = state / "installed.json"
+    if state.resolve().is_relative_to(root):
+        fail(f"Ownership state must stay outside the source checkout: {state}")
+    old = read_receipt(receipt_path)
+    check_path(state / "backups")
+    if (state / "backups").exists() and not (state / "backups").is_dir():
+        fail(f"Backup path must be a directory: {state / 'backups'}")
+
+    for directory in (root / "instructions", root / "skills", root / "bin"):
+        if directory.is_symlink():
+            fail(f"Source must not be a symlink: {directory}")
+        if not directory.is_dir():
+            fail(f"Source must be a directory: {directory}")
+    for source in (*(root / "skills").rglob("*"), *(root / "bin").iterdir()):
+        if source.is_symlink():
+            fail(f"Source must not be a symlink: {source}")
+    exported = sorted(path.parent for path in (root / "skills").glob("*/SKILL.md") if path.is_file())
+    files = [(root / "instructions/AGENTS.md", ".agents/AGENTS.md", 0o600)]
+    files.extend(
+        (source, str(Path(".agents") / source.relative_to(root)), 0o644)
+        for skill in exported for source in sorted(skill.rglob("*")) if source.is_file()
+    )
+    files.extend(
+        (source, f".local/bin/{source.name}", 0o755)
+        for source in sorted((root / "bin").iterdir()) if source.is_file()
+    )
+    desired = {}
+    contents = {}
+    for source, name, mode in files:
+        if source.is_symlink() or not source.is_file():
+            fail(f"Source must be a regular file: {source}")
+        content = source.read_bytes()
+        desired[name] = {"sha256": hashlib.sha256(content).hexdigest(), "mode": mode}
+        contents[name] = content
+
+    for name, entry in old["paths"].items():
+        target = home / name
+        check_path(target, link="target" in entry)
+        current = fingerprint(target)
+        if current is not None and current != entry:
+            fail(f"Local modification conflicts with ownership receipt: {target}. "
+                 "Save or reconcile the local change before reinstalling; receipt retained.")
+    for name in old["directories"]:
+        target = home / name
+        check_path(target)
+        if target.exists() and not target.is_dir():
+            fail(f"Owned directory changed type: {target}")
+
+    # Discover the shared collection as it will look after the planned copies and removals.
+    shared = home / ".agents/skills"
+    check_path(shared)
+    if shared.exists() and not shared.is_dir():
+        fail(f"Shared skills path must be a directory: {shared}")
+    skill_names = {skill.name for skill in exported}
+    if shared.exists():
+        for skill in shared.iterdir():
+            marker = str(Path(".agents/skills") / skill.name / "SKILL.md")
+            if skill.is_dir() and (skill / "SKILL.md").is_file() and (
+                marker in desired or marker not in old["paths"]
+            ):
+                skill_names.add(skill.name)
+    for name in sorted(skill_names):
+        path = f".claude/skills/{name}"
+        desired[path] = {"target": link_target(path)}
+
+    changes = []
+    owned = {}
+    for name in sorted(old["paths"].keys() | desired.keys()):
+        relative_parts(name)
+        target = home / name
+        after = desired.get(name)
+        check_path(target, link=(after is not None and "target" in after) or
+                   "target" in old["paths"].get(name, {}))
+        before = fingerprint(target)
+        if after is None:
+            if before is not None:
+                changes.append((name, None))
+            continue
+        if name not in old["paths"] and before is not None:
+            if "target" in after:
+                if "target" not in before or (target.parent / before["target"]).resolve() != (
+                    home / ".agents/skills" / target.name
+                ).resolve():
+                    fail(f"Unowned Claude skill path conflicts: {target}. Reconcile it before installing.")
+                print(f"Preserve unowned matching link: {target}")
+                continue
+            if before.get("sha256") != after["sha256"]:
+                fail(f"Unowned file differs: {target}. Save and reconcile it against the source, "
+                     "then move it aside or make it match before installing.")
+            print(f"Record matching profile file: {target}")
+        owned[name] = after
+        if before != after:
+            changes.append((name, after))
+
+    required = set()
+    for name, entry in desired.items():
+        if "sha256" in entry:
+            required.update(str(parent) for parent in PurePosixPath(name).parents
+                            if len(parent.parts) >= 3 and parent.parts[:2] == (".agents", "skills"))
+    directories = set(old["directories"])
+    directories.update(name for name in required if not (home / name).exists())
+    removed = {name for name, after in changes if after is None}
+    trimmed = []
+    for name in sorted(directories, key=lambda name: (-len(PurePosixPath(name).parts), name)):
+        target = home / name
+        if not target.exists() and name not in required:
+            directories.remove(name)
+        elif name not in required and all(
+            str(child.relative_to(home)) in removed for child in target.iterdir()
+        ):
+            trimmed.append(name)
+            removed.add(name)
+            directories.remove(name)
+    receipt = {"version": 1, "paths": owned, "directories": sorted(directories)}
+    receipt_changed = receipt != old or not receipt_path.exists()
+
+    for name, after in changes:
+        target = home / name
+        if after is None:
+            print(f"Remove owned path: {target}")
+        elif "target" in after:
+            print(f"Link: {target} -> {after['target']}")
+        else:
+            print(f"Copy: {target} (mode {oct(after['mode'])})")
+            before = target.read_bytes() if target.exists() else b""
+            try:
+                before_text, after_text = before.decode(), contents[name].decode()
+            except UnicodeDecodeError:
+                print("Non-UTF-8 content; no text diff. Inspect the source before applying.")
+            else:
+                print("".join(difflib.unified_diff(
+                    before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
+                    fromfile=str(target), tofile=name,
+                )), end="")
+    for name in trimmed:
+        print(f"Remove empty owned directory: {home / name}")
+    if receipt_changed:
+        print(f"Record ownership: {receipt_path}")
+    if not args.apply:
+        print("Preview only. Run scripts/install-local --apply to install this plan.")
+        return
+    if not changes and not trimmed and not receipt_changed:
+        print("Personal agent files and Claude links already match.")
+        return
+
     state.mkdir(parents=True, exist_ok=True)
-    backup = Path(tempfile.mkdtemp(prefix="install-", dir=state))
-    for target, _, _ in changes:
-        if target.exists():
-            saved = backup / target.relative_to(home)
+    backups = state / "backups"
+    backups.mkdir(exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix="install-", dir=backups))
+    if receipt_path.exists():
+        shutil.copy2(receipt_path, backup / "installed.json")
+    for name, _ in changes:
+        target = home / name
+        if target.exists() or target.is_symlink():
+            saved = backup / name
             saved.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, saved)
+            shutil.copy2(target, saved, follow_symlinks=False)
     print(f"Backups: {backup}")
-    for target, mode, content in changes:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
-        try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(content)
-                os.fchmod(output.fileno(), mode)
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-    print("Installed personal agent files. Existing sessions were not reloaded.")
+    for name, after in changes:
+        target = home / name
+        if after is None:
+            target.unlink()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if "target" in after:
+                target.symlink_to(after["target"], target_is_directory=True)
+            else:
+                atomic_write(target, contents[name], after["mode"])
+    for name in trimmed:
+        (home / name).rmdir()
+    atomic_write(receipt_path, (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode(), 0o600)
+    print("Installed personal agent files and Claude links. Existing sessions were not reloaded.")
 
 
 if __name__ == "__main__":

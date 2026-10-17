@@ -19,8 +19,9 @@ scripts/check
 - `scripts/test-profile`: titled and angle-delimited local links and source skill
   symlink refusal in a disposable checkout.
 - Bash syntax, ShellCheck, and shfmt for the shell entry points.
-- `scripts/test-install`: preview, copies, permissions, backups, repeat installs,
-  and symlink refusal in a disposable home.
+- `scripts/test-install`: discovery, compatibility links, ownership migration,
+  add/rename/retire cleanup, local conflicts, receipt validation, backups,
+  idempotence, preview immutability, and symlink refusal in disposable homes.
 - `scripts/test-agent-mailbox`: durable discovery, reviewed and uncertain sends,
   export integrity, and download safety with offline fixtures.
 - `scripts/test-checkpoint-review`: input validation, dispatch, worktree
@@ -34,8 +35,11 @@ review; follow the baseline's review policy separately.
 ## Validate changed loading behavior
 
 For installation or discovery changes, use a disposable home and configuration
-directories. Check the exported baseline and skill files, loading-link targets,
-application-owned entries, and automatic technical-writing eligibility. Verify
+and state directories. Keep export and compatibility-link discovery in the
+installer, not hand-maintained skill lists or dotfiles. Check the exported baseline
+and skill files, loading-link targets, ownership receipt, application-owned entries,
+and automatic technical-writing eligibility. Exercise cleanup only through recorded
+ownership, including local-change conflicts and untouched unowned links. Verify
 that notes and Todoist load the sibling writing skill for drafted or materially
 rewritten prose, not reads, state changes, or verbatim captures. Preserve unrelated
 manual-only invocation policies. Keep skill descriptions limited to triggers.

@@ -1,11 +1,11 @@
 # agents
 
-Personal instructions and skills for Pi, Codex, and Claude Code, with helpers for
-checkpoint review and durable mailbox work. Review and adapt this profile before
-installing it; it is not a universal development policy.
+Personal instructions and skills for Pi, Codex, Claude Code, and OpenCode, with
+helpers for checkpoint review and durable mailbox work. Review and adapt this
+profile before installing it; it is not a universal development policy.
 
 The profile does not install agents or tools, configure accounts, or manage
-credentials, sessions, browser profiles, or application-owned skills.
+credentials, sessions, browser profiles, or application-owned skill content.
 [Pi extensions](https://github.com/yazanabuashour/pi) remain a separate package.
 
 - [Install the profile and connect your agents](docs/install.md)

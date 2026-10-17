@@ -6,6 +6,9 @@
   call Pi. Pi-specific resources belong in [pi](https://github.com/yazanabuashour/pi).
   Leave machine settings, credentials, sessions, and application-owned skills
   with their owners.
+- Keep the skill install contract in `scripts/install-local`: discover exports and
+  Claude compatibility links without manual skill lists. Dotfiles owns machine
+  preferences and static instruction links, not skill installation.
 - Follow [development checks](docs/development.md) and the
   [installation preview](docs/install.md). Verify installed copies without
   reloading existing sessions.

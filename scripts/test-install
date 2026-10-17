@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,42 +17,94 @@ with tempfile.TemporaryDirectory() as temporary:
     cache = root / "bin/__pycache__"
     cache.mkdir()
     (cache / "generated.pyc").write_bytes(b"Not an installable helper")
+    unexported = root / "skills/not-exported"
+    unexported.mkdir()
+    (unexported / "README.md").write_text("Not a skill\n")
     home = Path(temporary) / "home"
-    skills = home / ".agents/skills"
-    skills.mkdir(parents=True)
+    shared = home / ".agents/skills"
+    shared.mkdir(parents=True)
+    claude = home / ".claude/skills"
+    claude.mkdir(parents=True)
+    (claude / "synced-skill").mkdir()
+    (claude / "synced-skill/SKILL.md").write_text("Synced independently\n")
     baseline = home / ".agents/AGENTS.md"
     baseline.write_text("Earlier personal policy\n")
     outside = Path(temporary) / "application-skill"
     outside.mkdir()
     (outside / "SKILL.md").write_text("Application-owned skill\n")
-    (skills / "omarchy").symlink_to(outside, target_is_directory=True)
-    (skills / "siftwire").mkdir()
-    application = skills / "siftwire/SKILL.md"
-    application.write_text("Version-matched application policy\n")
+    for name in ("omarchy", "diagnose-crash", "application"):
+        (shared / name).symlink_to(outside, target_is_directory=True)
+    (claude / "omarchy").symlink_to("../../.agents/skills/omarchy", target_is_directory=True)
+    (claude / "diagnose-crash").symlink_to(outside, target_is_directory=True)
+    (claude / "stale-external").symlink_to("/absent/external-skill", target_is_directory=True)
+    (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
+    for name in (".codex/skills/.system/builtin/SKILL.md", ".local/share/siftwire/SKILL.md"):
+        target = home / name
+        target.parent.mkdir(parents=True)
+        target.write_text("Outside shared discovery\n")
     old_helper = home / ".local/bin/checkpoint-review"
     old_helper.parent.mkdir(parents=True)
     binary = b"\x7fELF\xff\x00Earlier helper"
     old_helper.write_bytes(binary)
     old_helper.chmod(0o755)
     environment = {**os.environ, "HOME": str(home), "XDG_STATE_HOME": str(home / ".local/state")}
+    receipt_path = home / ".local/state/agents/installed.json"
 
-    def run(*arguments):
-        return subprocess.run([str(root / "scripts/install-local"), *arguments], cwd=root, env=environment,
-                              capture_output=True, text=True, check=True)
+    def snapshot(path):
+        result = {}
+        for item in path.rglob("*"):
+            name = str(item.relative_to(path))
+            if item.is_symlink():
+                result[name] = ("link", os.readlink(item))
+            elif item.is_file():
+                result[name] = (item.stat().st_mode, item.read_bytes())
+            else:
+                result[name] = ("directory", item.stat().st_mode)
+        return result
 
-    preview = run()
-    assert str(baseline) in preview.stdout
-    assert baseline.read_text() == "Earlier personal policy\n"
-    assert old_helper.read_bytes() == binary
-    assert "Non-UTF-8 content; no text diff" in preview.stdout
+    def run(*arguments, error=None):
+        before = snapshot(home)
+        result = subprocess.run([str(root / "scripts/install-local"), *arguments], cwd=root,
+                                env=environment, capture_output=True, text=True)
+        if error:
+            assert result.returncode != 0, result.stdout
+            assert error in result.stderr, result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+        if error or "--apply" not in arguments:
+            assert snapshot(home) == before, "Preview or refusal mutated the home"
+        return result
+
+    for arguments in ((), ("--apply",)):
+        run(*arguments, error="Unowned file differs")
+    baseline.write_bytes((root / "instructions/AGENTS.md").read_bytes())
+    run("--apply", error="Unowned file differs")
+    old_helper.write_bytes((root / "bin/checkpoint-review").read_bytes())
+    (claude / "notes").unlink()
+    (claude / "notes").symlink_to(outside)
+    run("--apply", error="Unowned Claude skill path conflicts")
+    (claude / "notes").unlink()
+    (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
+    preview = run().stdout
+    assert "Preserve unowned matching link" in preview
+    assert "Record matching profile file" in preview
+    assert not receipt_path.exists()
     installed = run("--apply")
-    backups = list((home / ".local/state/agents/backups").glob("install-*"))
-    assert len(backups) == 1
-    assert (backups[0] / ".agents/AGENTS.md").read_text() == "Earlier personal policy\n"
-    assert (backups[0] / ".local/bin/checkpoint-review").read_bytes() == binary
     assert "Backups:" in installed.stdout
-    assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
+    backups = list((receipt_path.parent / "backups").glob("install-*"))
+    assert len(backups) == 1
+    assert (backups[0] / ".agents/AGENTS.md").read_bytes() == baseline.read_bytes()
     assert baseline.stat().st_mode & 0o777 == 0o600
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt_path.stat().st_mode & 0o777 == 0o600
+    assert ".agents/AGENTS.md" in receipt["paths"]
+    assert ".claude/skills/omarchy" not in receipt["paths"]
+    assert ".claude/skills/diagnose-crash" not in receipt["paths"]
+    assert os.readlink(claude / "omarchy") == "../../.agents/skills/omarchy"
+    assert os.readlink(claude / "diagnose-crash") == str(outside)
+    assert ".claude/skills/notes" not in receipt["paths"]
+    assert receipt["paths"][".claude/skills/application"] == {"target": "../../.agents/skills/application"}
+    assert "application" not in {Path(name).name for name in receipt["directories"]}
     for source in (root / "bin").iterdir():
         if source.is_file():
             target = home / ".local/bin" / source.name
@@ -60,41 +113,158 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not (home / ".local/bin/__pycache__").exists()
     assert subprocess.run([str(home / ".local/bin/agent-mailbox"), "--help"],
                           capture_output=True, text=True, check=True).stdout.startswith("usage:")
-    for source in (root / "skills").rglob("*"):
-        if source.is_file():
-            assert (home / ".agents" / source.relative_to(root)).read_bytes() == source.read_bytes()
-    assert application.read_text() == "Version-matched application policy\n"
-    assert (skills / "omarchy").is_symlink()
+    for source in (root / "skills").glob("*/SKILL.md"):
+        for member in source.parent.rglob("*"):
+            if member.is_file():
+                assert (home / ".agents" / member.relative_to(root)).read_bytes() == member.read_bytes()
+        assert (claude / source.parent.name).resolve() == shared / source.parent.name
+    assert not (shared / "not-exported").exists()
+    assert not (claude / "siftwire").exists()
+    assert not (claude / "builtin").exists()
+    preserved = {name: value for name, value in snapshot(home).items() if name.startswith(
+        (".codex/", ".local/share/siftwire/", ".claude/skills/synced-skill", ".claude/skills/stale-external")
+    )}
+    before = snapshot(home)
+    assert "already match" in run("--apply").stdout
+    assert snapshot(home) == before
+    assert "Record ownership" not in run().stdout
+
+    (claude / "notes").unlink()
+    run("--apply")
+    assert ".claude/skills/notes" in json.loads(receipt_path.read_text())["paths"]
+    assert ".claude/skills/omarchy" not in json.loads(receipt_path.read_text())["paths"]
+
+    added = root / "skills/new-skill"
+    (added / "support").mkdir(parents=True)
+    (added / "SKILL.md").write_text("New exported skill\n")
+    (added / "support/data").write_bytes(b"\x00\xffskill support")
+    assert "new-skill" in run().stdout
+    run("--apply")
+    assert (shared / "new-skill/support/data").read_bytes() == b"\x00\xffskill support"
+    (added / "support/data").write_bytes(b"\x00\xffupdated support")
+    assert "Non-UTF-8 content; no text diff" in run().stdout
+    run("--apply")
+    assert any((backup / ".agents/skills/new-skill/support/data").is_file()
+               for backup in (receipt_path.parent / "backups").iterdir())
+    added.rename(root / "skills/renamed-skill")
+    assert "Remove owned path" in run().stdout
+    run("--apply")
+    assert not (shared / "new-skill").exists()
+    assert not (claude / "new-skill").is_symlink()
+    assert (claude / "renamed-skill").is_symlink()
+    assert any((backup / ".claude/skills/new-skill").is_symlink()
+               for backup in (receipt_path.parent / "backups").iterdir())
+    (shared / "renamed-skill/local.txt").write_text("Keep my file\n")
+    shutil.rmtree(root / "skills/renamed-skill")
+    run("--apply")
+    assert not (shared / "renamed-skill/SKILL.md").exists()
+    assert not (shared / "renamed-skill/support").exists()
+    assert (shared / "renamed-skill/local.txt").read_text() == "Keep my file\n"
+    assert ".agents/skills/renamed-skill" in json.loads(receipt_path.read_text())["directories"]
+    (shared / "renamed-skill/local.txt").unlink()
+    run("--apply")
+    assert not (shared / "renamed-skill").exists()
+
+    (shared / "preexisting").mkdir()
+    (root / "skills/preexisting").mkdir()
+    (root / "skills/preexisting/SKILL.md").write_text("Temporarily exported\n")
+    run("--apply")
+    shutil.rmtree(root / "skills/preexisting")
+    run("--apply")
+    assert (shared / "preexisting").is_dir()
+    assert ".agents/skills/preexisting" not in json.loads(receipt_path.read_text())["directories"]
+
+    baseline.unlink()
+    run("--apply")
+    assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
+    (shared / "application").unlink()
+    run("--apply")
+    assert not (claude / "application").is_symlink()
+    assert (shared / "omarchy").is_symlink() and (claude / "omarchy").is_symlink()
     assert (outside / "SKILL.md").read_text() == "Application-owned skill\n"
-    assert not (home / ".claude").exists()
-    assert run().stdout == "Preview only. Run scripts/install-local --apply to install these files.\n"
-    assert run("--apply").stdout == "Personal agent files already match.\n"
-    for state_value in ("", "relative-state"):
-        baseline.write_text("Private previous policy\n")
-        before = set((home / ".local/state/agents/backups").iterdir())
-        environment["XDG_STATE_HOME"] = state_value
-        run("--apply")
-        created = set((home / ".local/state/agents/backups").iterdir()) - before
-        assert len(created) == 1
-        assert (created.pop() / ".agents/AGENTS.md").read_text() == "Private previous policy\n"
-        assert not (root / "agents/backups").exists()
-        assert not (root / "relative-state").exists()
-    environment["XDG_STATE_HOME"] = str(home / ".local/state")
+
+    baseline.write_text("Private local change\n")
+    run("--apply", error="Local modification conflicts")
+    baseline.write_bytes((root / "instructions/AGENTS.md").read_bytes())
+    baseline.chmod(0o644)
+    run("--apply", error="Local modification conflicts")
+    baseline.chmod(0o600)
+    notes = claude / "notes"
+    notes.unlink()
+    notes.symlink_to(shared / "notes")
+    run("--apply", error="Local modification conflicts")
+    notes.unlink()
+    notes.symlink_to("../../.agents/skills/notes")
+    retired = root / "skills/notes"
+    retired.rename(root / "retired-notes")
+    (shared / "notes/SKILL.md").write_text("Locally modified retired skill\n")
+    run("--apply", error="Local modification conflicts")
+    (root / "retired-notes").rename(retired)
+    (shared / "notes/SKILL.md").write_bytes((retired / "SKILL.md").read_bytes())
+
+    original_receipt = receipt_path.read_bytes()
+    original = json.loads(original_receipt)
+    invalid = [
+        {**original, "version": True},
+        {**original, "unknown": []},
+        {**original, "paths": {"../../escape": {"sha256": "0" * 64, "mode": 0o644}}},
+        {**original, "paths": {".agents/skills/../../escape": {"sha256": "0" * 64, "mode": 0o644}}},
+        {**original, "paths": {str(home / "escape"): {"sha256": "0" * 64, "mode": 0o644}}},
+        {**original, "paths": {".ssh/config": {"sha256": "0" * 64, "mode": 0o600}}},
+        {**original, "paths": {".agents/AGENTS.md": {"sha256": "invalid", "mode": 0o600}}},
+        {**original, "paths": {".claude/skills/notes": {"target": str(outside)}}},
+        {**original, "directories": [".claude/skills"]},
+        {**original, "directories": [".agents/skills/../escape"]},
+        {**original, "directories": [".agents/skills/notes", ".agents/skills/notes"]},
+        {**original, "directories": [".agents/skills/notes/SKILL.md"]},
+    ]
+    for receipt in invalid:
+        receipt_path.write_text(json.dumps(receipt))
+        run("--apply", error="Invalid")
+    receipt_path.write_text('{"version": 1, "version": 1}')
+    run("--apply", error="Duplicate receipt key")
+    receipt_path.write_bytes(original_receipt)
+
+    for target in (baseline, shared / "notes", claude, receipt_path, receipt_path.parent / "backups"):
+        saved = target.with_name(target.name + ".saved")
+        target.rename(saved)
+        target.symlink_to(saved, target_is_directory=saved.is_dir())
+        run("--apply", error="Refusing to write through a symlink")
+        target.unlink()
+        saved.rename(target)
+    state = receipt_path.parent
+    saved_state = state.with_name("agents.saved")
+    state.rename(saved_state)
+    state.symlink_to(saved_state, target_is_directory=True)
+    run("--apply", error="Refusing to write through a symlink")
+    state.unlink()
+    saved_state.rename(state)
+    (root / "skills").rename(root / "saved-skills")
+    run("--apply", error="Source must be a directory")
+    (root / "saved-skills").rename(root / "skills")
     source_skill = root / "skills/technical-writing"
-    saved_skill = Path(temporary) / "source-skill"
+    saved_skill = root / "saved-skill"
     source_skill.rename(saved_skill)
     source_skill.symlink_to(saved_skill, target_is_directory=True)
-    refused = subprocess.run([str(root / "scripts/install-local"), "--apply"], env=environment,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and "Source must not be a symlink" in refused.stderr
-    assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
-    assert (skills / "omarchy").is_symlink()
+    run("--apply", error="Source must not be a symlink")
     source_skill.unlink()
     saved_skill.rename(source_skill)
-    baseline.unlink()
-    baseline.symlink_to(outside / "SKILL.md")
-    refused = subprocess.run([str(root / "scripts/install-local"), "--apply"], env=environment,
-                             capture_output=True, text=True)
-    assert refused.returncode != 0 and "Refusing to write through a symlink" in refused.stderr
-    assert (outside / "SKILL.md").read_text() == "Application-owned skill\n"
+
+    (shared / "synced-skill").mkdir()
+    (shared / "synced-skill/SKILL.md").write_text("Shared, not synced\n")
+    run("--apply", error="Target must be a regular file or skill link")
+    shutil.rmtree(shared / "synced-skill")
+    external_state = Path(temporary) / "external-state"
+    environment["XDG_STATE_HOME"] = str(external_state)
+    run()
+    assert not external_state.exists()
+    environment["XDG_STATE_HOME"] = str(root)
+    run("--apply", error="Ownership state must stay outside the source checkout")
+    assert not (root / "agents").exists()
+    for state_value in ("", "relative-state"):
+        environment["XDG_STATE_HOME"] = state_value
+        assert "already match" in run("--apply").stdout
+        assert not (root / "relative-state").exists()
+    for name, value in preserved.items():
+        assert snapshot(home)[name] == value
 print("Personal installer tests passed.")
