@@ -17,9 +17,8 @@ scripts/install-local
 ```
 
 Review the preview, `instructions/AGENTS.md`, and the skills you intend to use.
-Adapt personal preferences before installing, including notes checkout access,
-Todoist board conventions, and browser-session policy. Note edits include
-committing and pushing; keep that workflow in the notes repository. Do not add
+Adapt personal preferences before installing, including local `~/notes`
+organization, Todoist board conventions, and browser-session policy. Do not add
 credentials, private account data, or machine configuration to this checkout.
 
 Install the reviewed files:
