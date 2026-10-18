@@ -110,13 +110,17 @@ agent-mailbox --config /absolute/private/path/mailbox.json reconcile LOGICAL_KEY
 ```
 
 An id-only send response is accepted only when the known native draft confirms
-that ID as its sent `email_id` and supplies a valid `thread_id`. Failed or
-mismatched readback leaves the attempt uncertain and blocks retries.
+that ID as its sent `email_id`. Its `thread_id` may be null for a standalone send;
+a non-null thread ID must be valid. Failed, malformed, or mismatched readback
+leaves the attempt uncertain and blocks retries.
 
-Reconciliation reads native draft `email_id`/`thread_id`; missing or deleted drafts
-remain unresolved. There is no automated reset for ambiguous sends. Neither the
-local lock nor the API's 24-hour key lifetime removes the human UI race between
-comparison and send. A recorded sent receipt means queued, not delivered.
+Reconciliation uses the known native draft's sent `email_id`, even with a null
+`thread_id`; missing or deleted drafts remain unresolved. Sent results retain
+`id` (the draft ID), `email_id`, and `thread_id` (a UUID or null).
+
+There is no automated reset for ambiguous sends. Neither the local lock nor the
+API's 24-hour key lifetime removes the human UI race between comparison and send.
+A recorded sent receipt means queued, not delivered.
 
 ## Export or run a read/archive job
 

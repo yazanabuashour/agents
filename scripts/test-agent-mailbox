@@ -154,10 +154,14 @@ class MailboxTests(unittest.TestCase):
             ("draft-id-is-not-email-id", {"id": DRAFT}, confirmed, False),
             ("foreign-draft", {"id": EMAIL}, {**confirmed, "id": OTHER}, False),
             ("unsent-draft", {"id": EMAIL}, self.draft, False),
-            ("missing-thread", {"id": EMAIL}, {**confirmed, "thread_id": None}, False),
+            ("standalone-null-thread", {"id": EMAIL}, {**confirmed, "type": "standalone",
+                                                       "thread_id": None, "reply_to_email_id": None}, True),
+            ("missing-thread", {"id": EMAIL}, {k: v for k, v in confirmed.items() if k != "thread_id"}, False),
+            ("invalid-email", {"id": EMAIL}, {**confirmed, "email_id": "invalid"}, False),
             ("invalid-thread", {"id": EMAIL}, {**confirmed, "thread_id": "invalid"}, False),
             ("readback-failed", {"id": EMAIL}, RuntimeError("Readback failed"), False),
             ("invalid-response-id", {"id": "invalid"}, confirmed, False),
+            ("uncorroborated-null-thread", {"id": DRAFT, "email_id": EMAIL, "thread_id": None}, confirmed, False),
         ]
         for name, response, readback, success in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
@@ -185,7 +189,7 @@ class MailboxTests(unittest.TestCase):
                             receipt = mailbox.send(config, db, "id-only", reviewed)
                             self.assertEqual(receipt["result"]["id"], DRAFT)
                             self.assertEqual(receipt["result"]["email_id"], EMAIL)
-                            self.assertEqual(receipt["result"]["thread_id"], THREAD)
+                            self.assertEqual(receipt["result"]["thread_id"], readback["thread_id"])
                         else:
                             with self.assertRaisesRegex(RuntimeError, "uncertain"):
                                 mailbox.send(config, db, "id-only", reviewed)
@@ -196,8 +200,18 @@ class MailboxTests(unittest.TestCase):
                         else:
                             with self.assertRaisesRegex(ValueError, "uncertain"):
                                 mailbox.send(config, db, "id-only", reviewed)
-                            with patch.object(mailbox, "cli", return_value=confirmed):
-                                self.assertEqual(mailbox.reconcile(config, db, "id-only")["status"], "sent")
+                            if name in ("foreign-draft", "missing-thread", "invalid-email",
+                                        "invalid-thread", "readback-failed"):
+                                with self.assertRaises((ValueError, KeyError, RuntimeError)):
+                                    mailbox.reconcile(config, db, "id-only")
+                                self.assertEqual(mailbox.intent(db, "id-only")[2], "uncertain")
+                            elif name == "unsent-draft":
+                                self.assertEqual(mailbox.reconcile(config, db, "id-only")["status"], "uncertain")
+                            with patch.object(mailbox, "cli", return_value={**confirmed, "thread_id": None}):
+                                reconciled = mailbox.reconcile(config, db, "id-only")
+                                self.assertEqual(reconciled["status"], "sent")
+                                self.assertEqual(reconciled["result"]["email_id"], EMAIL)
+                                self.assertIsNone(reconciled["result"]["thread_id"])
                 sends = [args for args in self.calls[start:] if args[:3] == ("inboxes", "drafts", "send")
                          and "--help" not in args]
                 self.assertEqual(len(sends), 1)

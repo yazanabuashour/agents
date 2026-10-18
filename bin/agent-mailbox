@@ -228,10 +228,11 @@ def send(config, db, key, reviewed_sha256):
             result = sent_draft(config, draft_id)
             if result is None or result["email_id"] != email_id:
                 raise ValueError("Native draft did not confirm the send response email ID")
-        if result.get("id") != draft_id or not result.get("email_id") or not result.get("thread_id"):
-            raise ValueError("Unexpected send receipt")
-        identifier(result["email_id"])
-        identifier(result["thread_id"])
+        else:
+            if result.get("id") != draft_id or not result.get("email_id") or not result.get("thread_id"):
+                raise ValueError("Unexpected send receipt")
+            identifier(result["email_id"])
+            identifier(result["thread_id"])
     except Exception:
         with db:
             db.execute("UPDATE intents SET status='uncertain' WHERE key=?", (key,))
@@ -246,9 +247,10 @@ def sent_draft(config, draft_id):
                 "--draft_id", draft_id)
     if draft.get("id") != draft_id:
         raise ValueError("Unexpected draft identity")
-    if draft.get("email_id") and draft.get("thread_id"):
+    if draft.get("email_id"):
         identifier(draft["email_id"])
-        identifier(draft["thread_id"])
+        if draft["thread_id"] is not None:
+            identifier(draft["thread_id"])
         return {"id": draft_id, "email_id": draft["email_id"], "thread_id": draft["thread_id"],
                 "evidence": "native draft reports sent; may have been sent in the human UI"}
     return None

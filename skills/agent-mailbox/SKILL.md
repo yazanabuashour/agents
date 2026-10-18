@@ -23,7 +23,9 @@ Use `agent-mailbox --help` and subcommand help for syntax.
 - Report missing capabilities or access. Installing/upgrading software,
   creating credentials, inboxes, forwarding routes, or DNS records requires user
   authority for those operations. Use the official CLI's current prerequisite
-  guidance; do not build a replacement mailbox platform.
+  guidance; do not build a replacement mailbox platform. Native inbox creation
+  requires verified DKIM and SPF. Live DNS answers can differ from provider
+  verification status; follow the CLI's guidance to recheck that status.
 
 ## Read and draft by default
 
@@ -75,8 +77,9 @@ Use `agent-mailbox --help` and subcommand help for syntax.
    `409` for an already-sent draft; API idempotency expires after 24 hours.
    A missing receipt does not prove failure. The helper blocks retry of attempted
    intents even after expiry. Investigate privately and report unresolved state.
-5. Report the provider email/thread IDs as queued-send evidence. They do not
-   prove delivery. Reconciliation can observe a send performed in the human UI.
+5. Report the provider email ID and thread ID, when available, as queued-send
+   evidence, not delivery proof. A standalone sent draft can have a null thread ID.
+   Reconciliation can observe a send performed in the human UI.
 
 There is no documented atomic compare-and-send for native drafts. A human UI or
 another tool can change a draft between the helper's comparison and send. Avoid
