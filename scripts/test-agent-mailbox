@@ -16,6 +16,7 @@ loader = importlib.machinery.SourceFileLoader("mailbox", str(Path(__file__).reso
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mailbox = importlib.util.module_from_spec(spec)
 loader.exec_module(mailbox)
+REAL_CLI = mailbox.cli
 INBOX, DRAFT, THREAD, EMAIL, OTHER = [f"00000000-0000-4000-8000-{i:012d}" for i in range(1, 6)]
 
 
@@ -49,6 +50,77 @@ class MailboxTests(unittest.TestCase):
         mocking = patch.object(mailbox, "cli", cli)
         mocking.start()
         self.addCleanup(mocking.stop)
+
+    def provider_failure(self, *args):
+        result = mailbox.subprocess.CompletedProcess([], 1, "", mailbox.encode({"error": {
+            "code": "list_error", "statusCode": 503, "message": "private@example.test"}}))
+        with patch.object(mailbox.subprocess, "run", return_value=result):
+            return REAL_CLI(self.config, *args)
+
+    def test_cli_failure_evidence_is_allowlisted_and_private(self):
+        secret = f"re_fictional private@example.test {INBOX} https://example.test/?signature=secret body text"
+        cases = [
+            ({"error": {"code": "list_error", "statusCode": 429, "message": secret,
+                        "headers": {"x-secret": secret}, "body": secret}},
+             {"format": "error_object", "code": "list_error", "http_status": 429}),
+            ({"error": {"code": secret, "statusCode": secret, "message": secret}},
+             {"format": "error_object", "code": "unknown"}),
+            ({"error": {"code": [], "statusCode": True}}, {"format": "error_object", "code": "unknown"}),
+            ({"error": secret}, {"format": "unrecognized"}),
+            (secret, {"format": "unrecognized"}),
+            ("", {"format": "empty"}),
+        ]
+        for stream in ("stdout", "stderr"):
+            for payload, expected in cases:
+                with self.subTest(stream=stream, payload=payload):
+                    content = mailbox.encode(payload) if isinstance(payload, dict) else payload
+                    result = mailbox.subprocess.CompletedProcess([], -15, "", "")
+                    setattr(result, stream, content)
+                    with patch.object(mailbox.subprocess, "run", return_value=result) as invoked:
+                        with self.assertRaises(mailbox.ResendFailure) as raised:
+                            REAL_CLI({**self.config, "profile": secret}, "inboxes", "threads", "list",
+                                     "--inbox_id", INBOX, "--after", secret)
+                    invoked.assert_called_once()
+                    failure = raised.exception
+                    self.assertIn(f"state_dir/{failure.evidence}", str(failure))
+                    path = Path(self.config["state_dir"]) / failure.evidence
+                    record = mailbox.json.loads(path.read_text())
+                    self.assertEqual(record["operation"], "inboxes threads list")
+                    self.assertEqual(record["exit_status"], -15)
+                    self.assertEqual(record["diagnostics"][0 if stream == "stderr" else 1],
+                                     {"stream": stream, **expected})
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+                    for value in (secret, INBOX, "private@example.test", "signature=secret", "body text"):
+                        self.assertNotIn(value, path.read_text() + str(failure))
+        result = mailbox.subprocess.CompletedProcess([], 1, secret, secret)
+        with patch.object(mailbox.subprocess, "run", return_value=result):
+            with self.assertRaises(mailbox.ResendFailure) as raised:
+                REAL_CLI(self.config, secret, "--help")
+            record = mailbox.json.loads((Path(self.config["state_dir"]) / raised.exception.evidence).read_text())
+            self.assertEqual(record["operation"], "unknown")
+            self.assertTrue(record["help"])
+            with patch.object(mailbox.os, "open", side_effect=PermissionError(secret)):
+                with self.assertRaisesRegex(mailbox.ResendFailure, "exit 1.*evidence unavailable") as raised:
+                    REAL_CLI(self.config, "--version")
+            self.assertNotIn(secret, str(raised.exception))
+
+    def test_cli_failure_output_points_to_private_evidence(self):
+        root = Path(self.temporary.name)
+        provider = root / "resend"
+        provider.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"error":{"code":"auth_error","message":"re_fictional"}}\' >&2\nexit 1\n')
+        provider.chmod(0o755)
+        config = root / "config.json"
+        config.write_text(mailbox.encode(self.config))
+        result = mailbox.subprocess.run(
+            [mailbox.sys.executable, "-B", mailbox.__file__, "--config", str(config), "poll"],
+            env={**mailbox.os.environ, "PATH": str(root) + mailbox.os.pathsep + mailbox.os.environ["PATH"]},
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        evidence, = Path(self.config["state_dir"]).glob("failure-*.json")
+        self.assertIn("state_dir/" + evidence.name, mailbox.json.loads(result.stderr)["error"])
+        self.assertNotIn("re_fictional", result.stderr + evidence.read_text())
+        self.assertEqual(result.stdout, "")
 
     def test_cli_rejects_invalid_config_before_state_or_provider_work(self):
         root = Path(self.temporary.name)
@@ -217,14 +289,20 @@ class MailboxTests(unittest.TestCase):
                 self.assertEqual(len(sends), 1)
 
     def test_timeout_and_process_death_block_retry(self):
-        for failure in (RuntimeError("timeout"), KeyboardInterrupt()):
+        try:
+            self.provider_failure("inboxes", "drafts", "send")
+        except mailbox.ResendFailure as error:
+            provider_error = error
+        for failure in (RuntimeError("timeout"), KeyboardInterrupt(), provider_error):
             with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 config = {**self.config, "state_dir": directory + "/state"}
                 with mailbox.state(config) as db:
                     mailbox.review(config, db, DRAFT, "action")
                     self.failure = failure
-                    with self.assertRaises((RuntimeError, KeyboardInterrupt)):
+                    with self.assertRaises((RuntimeError, KeyboardInterrupt)) as raised:
                         mailbox.send(config, db, "action", mailbox.digest(mailbox.snapshot(config, DRAFT)))
+                    if failure is provider_error:
+                        self.assertIn("state_dir/" + provider_error.evidence, str(raised.exception))
                 with mailbox.state(config) as db:
                     with self.assertRaisesRegex(ValueError, "uncertain"):
                         mailbox.send(config, db, "action", mailbox.digest(mailbox.snapshot(config, DRAFT)))
@@ -246,7 +324,7 @@ class MailboxTests(unittest.TestCase):
                 return [{"id": EMAIL, "text": "Untrusted synthetic inbound"}], EMAIL
             if not failed:
                 failed = True
-                raise RuntimeError("interrupted")
+                self.provider_failure(*args, "--after", cursor)
             return [{"id": OTHER, "text": "Second page"}], None
 
         with patch.object(mailbox, "page", pages):
@@ -254,6 +332,8 @@ class MailboxTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     mailbox.poll(self.config, db)
                 self.assertEqual(len(mailbox.pending(db)), 1)
+                evidence, = Path(self.config["state_dir"]).glob("failure-*.json")
+                self.assertEqual(mailbox.json.loads(evidence.read_text())["operation"], "inboxes threads emails list")
                 mailbox.review(self.config, db, DRAFT, "preserved-intent")
             with mailbox.state(self.config) as db:
                 mailbox.poll(self.config, db)
@@ -341,7 +421,7 @@ class MailboxTests(unittest.TestCase):
             if args[:3] == ("emails", "receiving", "attachments"):
                 index = 0 if cursor is None else 1
                 if fail_attachment and index:
-                    raise RuntimeError("Attachment page unavailable")
+                    self.provider_failure(*args)
                 return dict(data=[dict(id=attachment_ids[index], size=3,
                                        filename="../../untrusted.sh",
                                        download_url=f"https://downloads.example.test/{index}?synthetic-secret")],
@@ -383,6 +463,8 @@ class MailboxTests(unittest.TestCase):
             self.assertTrue(partial["integrity_verified"])
             self.assertFalse(partial["content_complete"])
             self.assertTrue(partial["gaps"])
+            reference = partial["gaps"][0]["evidence"]
+            self.assertTrue((Path(self.config["state_dir"]) / reference.removeprefix("state_dir/")).is_file())
             fail_attachment = False
             for name, raw, attachments, component in [
                 ("raw-shape", ["unexpected"], email["attachments"], "/raw"),

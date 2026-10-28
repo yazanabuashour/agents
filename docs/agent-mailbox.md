@@ -191,6 +191,28 @@ separately from completeness. Interrupted exports retain an
 incomplete manifest; start a fresh export instead of treating the partial directory
 as complete.
 
+## Diagnose a failed Resend command
+
+On a nonzero Resend CLI exit, the helper writes a private `failure-*.json` file
+under the configured `state_dir`. The error output names it as
+`state_dir/failure-…json`; resolve that reference using your private config, not
+the working directory. Send errors retain the reference while remaining uncertain;
+export gaps retain it in the manifest and result JSON.
+
+Inspect the record privately for the operation, UTC time, process exit status,
+and recognized CLI error code and HTTP error status from structured output.
+Unknown codes and unstructured output remain unclassified. Provider messages,
+headers, bodies, arguments, and raw output are deliberately omitted: even provider
+error text can echo credentials or mail. Records use mode `0600` inside the
+`0700` state directory, outside Git. If saving evidence fails, the error reports
+`failure evidence unavailable` without exposing the storage error.
+
+Retain records for diagnosis and remove them when no longer needed; the helper
+does not rotate them. A later successful run does not establish the original
+failure's cause. Do not reset discovery, acknowledge mail, or retry an uncertain
+send merely to clear an alert. Host scheduling and alert delivery belong to the
+host integration, not this repository.
+
 ## Exit status
 
 | Status | Meaning |

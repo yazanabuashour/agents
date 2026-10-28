@@ -46,6 +46,67 @@ def outside_git(path):
     return path
 
 
+class ResendFailure(RuntimeError):
+    def __init__(self, message, evidence=None):
+        self.evidence = evidence
+        location = f"evidence: state_dir/{evidence}" if evidence else "failure evidence unavailable"
+        super().__init__(f"{message}; {location}")
+
+
+def failure_evidence(config, args, result):
+    operations = (
+        ("--version",), ("inboxes", "get"), ("inboxes", "labels", "list"),
+        ("inboxes", "threads", "list"), ("inboxes", "threads", "emails", "list"),
+        ("inboxes", "drafts", "get"), ("inboxes", "drafts", "list"),
+        ("inboxes", "drafts", "send"), ("emails", "get"),
+        ("emails", "receiving", "get"), ("emails", "attachments"),
+        ("emails", "receiving", "attachments"),
+    )
+    operation = next((" ".join(parts) for parts in operations if args[:len(parts)] == parts), "unknown")
+    record = {"format": 1, "at": datetime.now(timezone.utc).isoformat(),
+              "operation": operation, "help": "--help" in args, "exit_status": result.returncode,
+              "diagnostics": []}
+    for stream, content in (("stderr", result.stderr), ("stdout", result.stdout)):
+        diagnostic = {"stream": stream, "format": "empty" if not content else "unrecognized"}
+        try:
+            response = json.loads(content)
+        except (ValueError, RecursionError):
+            response = None
+        error = response.get("error") if isinstance(response, dict) else None
+        if isinstance(error, dict):
+            diagnostic["format"] = "error_object"
+            code = error.get("code")
+            diagnostic["code"] = code if isinstance(code, str) and code in {
+                "auth_error", "fetch_error", "list_error", "send_error", "validation_error",
+                "missing_api_key", "invalid_api_key", "restricted_api_key", "not_found",
+                "rate_limit_exceeded", "internal_server_error", "service_unavailable",
+                "gateway_timeout", "invalid_idempotent_request", "concurrent_idempotent_requests",
+            } else "unknown"
+            status = error.get("statusCode")
+            if type(status) is int and 400 <= status <= 599:
+                diagnostic["http_status"] = status
+            # Provider messages, headers, and bodies can echo secrets, even in JSON.
+        record["diagnostics"].append(diagnostic)
+    name = "failure-" + uuid.uuid4().hex + ".json"
+    try:
+        directory = outside_git(config["state_dir"])
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        descriptor = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as output:
+            output.write(encode(record) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError):
+        return None
+    return name
+
+
 def cli(config, *args, help_text=False):
     command = ["resend", "--json"]
     if config.get("profile"):
@@ -53,7 +114,8 @@ def cli(config, *args, help_text=False):
     result = subprocess.run(command + list(args), stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, check=False)
     if result.returncode:
-        raise RuntimeError(f"Resend command failed (exit {result.returncode}); inspect it privately")
+        evidence = failure_evidence(config, args, result)
+        raise ResendFailure(f"Resend command failed (exit {result.returncode})", evidence)
     if help_text:
         return result.stdout
     response = json.loads(result.stdout)
@@ -233,10 +295,13 @@ def send(config, db, key, reviewed_sha256):
                 raise ValueError("Unexpected send receipt")
             identifier(result["email_id"])
             identifier(result["thread_id"])
-    except Exception:
+    except Exception as error:
         with db:
             db.execute("UPDATE intents SET status='uncertain' WHERE key=?", (key,))
-        raise RuntimeError("Send outcome uncertain; use reconcile with the same key") from None
+        message = "Send outcome uncertain; use reconcile with the same key"
+        if isinstance(error, ResendFailure):
+            raise ResendFailure(message, error.evidence) from None
+        raise RuntimeError(message) from None
     with db:
         db.execute("UPDATE intents SET status='sent',result=? WHERE key=?", (encode(result), key))
     return {"status": "sent", "result": result}
@@ -460,7 +525,10 @@ def export(config, destination):
         persist()
 
     def gap(component, error):
-        manifest["gaps"].append({"component": component, "reason": type(error).__name__})
+        entry = {"component": component, "reason": type(error).__name__}
+        if isinstance(error, ResendFailure):
+            entry["evidence"] = f"state_dir/{error.evidence}" if error.evidence else "unavailable"
+        manifest["gaps"].append(entry)
         persist()
 
     def export_email(email, thread_id):
