@@ -2,7 +2,7 @@
 
 ## Set up and check
 
-Use Linux with Python 3.9+, PyYAML, Bash, Git, ShellCheck, shfmt, and the standard
+Use Linux with Python 3.11+, PyYAML, Bash, Git, ShellCheck, shfmt, and the standard
 process tools supplied by procps and util-linux. On Ubuntu:
 
 ```sh
@@ -27,11 +27,36 @@ scripts/check
   export integrity, and download safety with offline fixtures.
 - `scripts/test-checkpoint-review`: input validation, dispatch, worktree
   protection, and process cleanup with mock reviewers.
+- `scripts/test-rust-baseline`: discovery, workspace lint inheritance, drift
+  diagnostics, and read-only comparison with disposable Cargo projects.
 - Git whitespace checks for staged and unstaged changes.
 
 CI runs the same command. Checks need no live accounts, provider requests, or
 installation into a real user profile. Mock checkpoint tests are not checkpoint
 review; follow the baseline's review policy separately.
+
+## Compare Rust development settings
+
+Run the read-only comparison when creating a Rust project or changing its shared
+development settings:
+
+```sh
+bin/rust-baseline --root "$HOME/repo"
+bin/rust-baseline --root "$HOME/repo" --json > /tmp/rust-baseline.json
+```
+
+Discovery includes direct child directories with `Cargo.toml`, not nested reference
+checkouts or symlinked directories. Pass project paths to compare a subset.
+The helper checks declared workspace members, inherited settings, shared lint
+levels and priorities, project-local Clippy configuration, edition, and toolchain
+components. Clippy lookup starts at each package, preferring `.clippy.toml` over
+`clippy.toml` in the nearest directory, and stops at the project root. Environment
+overrides still need the project's own gates.
+Stronger lint levels pass and appear in the receipt. Project-specific extra lints
+and settings remain local; the checker does not synchronize toolchain versions or
+claim to validate minimum-version compatibility. Run each affected project's own
+gates for those claims. Fix differences in their owning repositories; no project
+needs this profile installed to build or test.
 
 ## Validate changed loading behavior
 

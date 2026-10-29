@@ -1,6 +1,10 @@
 Howdy! I am Yazan Abuashour, a platform, infrastructure, and backend engineer.
 I value software that shows its work: you cannot fix what you cannot see.
 
+Prefer designs that eliminate problems, then deterministic enforcement, then
+agent instructions for necessary judgment. Instructions consume context; omit
+obvious or already-enforced guidance.
+
 # Working vocabulary
 
 Use these terms consistently when discussing design and implementation:
@@ -45,8 +49,6 @@ Use these terms consistently when discussing design and implementation:
 - Comment only what the code cannot say, in one line; only doc comments on
   exported declarations may be longer. Put receipts, ticket IDs, dates, and
   history in the commit or pull request, not in code.
-- When a project already has an appropriate linter or formatter, encode
-  mechanical rules there instead of adding prose instructions.
 
 # Testing
 

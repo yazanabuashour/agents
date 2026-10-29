@@ -18,6 +18,7 @@ machine settings. Upstream tools own their CLI guides and implementations.
 | `skills/<name>/SKILL.md` and sibling files | `~/.agents/skills/<name>/` | Conditional instructions and supporting files |
 | `bin/checkpoint-review` | `~/.local/bin/checkpoint-review` | Explicit source-delta review command |
 | `bin/agent-mailbox` | `~/.local/bin/agent-mailbox` | Durable mailbox discovery, reviewed native draft sends, and verified exports |
+| `bin/rust-baseline` | `~/.local/bin/rust-baseline` | Read-only Cargo development-setting comparison; requires Python 3.11+ |
 
 The repository's root `AGENTS.md` governs work on this checkout; it is not the
 exported baseline. The installer owns profile copies, harness instruction links,
@@ -55,7 +56,8 @@ provide missing tools, or enforce model behavior.
 | `technical-writing` | No executable workflow dependency |
 
 See the [notes skill](../skills/notes/SKILL.md) for local reading, writing, and
-save verification.
+save verification, and [development checks](development.md#compare-rust-development-settings)
+for the Rust comparison workflow.
 
 Configure and authenticate tools outside this repository. Follow the
 [browser skill](../skills/agent-browser/SKILL.md) for profile and session policy;

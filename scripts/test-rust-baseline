@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+import json
+from pathlib import Path
+import runpy
+import subprocess
+import tempfile
+
+
+root = Path(__file__).resolve().parent.parent
+helper = root / "bin/rust-baseline"
+policy = runpy.run_path(str(helper))
+lints = "[lints.rust]\n" + "".join(f'{name} = "deny"\n' for name in policy["RUST_LINTS"])
+lints += "\n[lints.clippy]\n"
+lints += "".join(f'{name} = {{ level = "deny", priority = -1 }}\n' for name in ("all", "pedantic", "nursery"))
+lints += "".join(f'{name} = "deny"\n' for name in policy["CLIPPY_LINTS"])
+package = '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\nrust-version = "1.91.1"\n'
+
+with tempfile.TemporaryDirectory() as temporary:
+    parent = Path(temporary)
+    project = parent / "project"
+    project.mkdir()
+    cargo = project / "Cargo.toml"
+    cargo.write_text(package + lints)
+    (project / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel = "1.97.1"\nprofile = "minimal"\ncomponents = ["clippy", "rustfmt", "rust-analyzer"]\n')
+    (project / "clippy.toml").write_text(
+        'disallowed-types = [\n'
+        '  { path = "std::any::Any", reason = "Use domain types." },\n'
+        '  { path = "core::any::Any", reason = "Use domain types." },\n]\n')
+    ignored = parent / "not-a-project"
+    ignored.mkdir()
+    (ignored / "nested").mkdir()
+    (ignored / "nested/Cargo.toml").write_text("not a direct project")
+
+    def snapshot():
+        return {str(path.relative_to(parent)): path.read_bytes()
+                for path in parent.rglob("*") if path.is_file()}
+
+    def run(*args, expected=0):
+        before = snapshot()
+        result = subprocess.run([str(helper), "--json", *map(str, args)], capture_output=True, text=True)
+        assert result.returncode == expected, (result.stdout, result.stderr)
+        assert snapshot() == before, "Comparison wrote to the scanned tree"
+        return json.loads(result.stdout)
+
+    receipt = run("--root", parent)
+    assert len(receipt) == 1 and receipt[0]["packages"][0]["rust-version"] == "1.91.1"
+    cargo.write_text(package + lints.replace('too_many_lines = "deny"', 'too_many_lines = "forbid"'))
+    assert run(project)[0]["stricter"] == ["Cargo.toml: clippy.too_many_lines=forbid"]
+    cargo.write_text(package + lints.replace('missing_assert_message = "deny"\n', ""))
+    assert any("missing_assert_message" in error for error in run(project, expected=1)[0]["errors"])
+    cargo.write_text(package + lints.replace('priority = -1', 'priority = 0', 1))
+    assert any("clippy.all" in error for error in run(project, expected=1)[0]["errors"])
+    cargo.write_text(package.replace('1.91.1', '1.98.0') + lints)
+    assert any("exceeds pinned" in error for error in run(project, expected=1)[0]["errors"])
+    cargo.write_text(package + lints)
+    config = project / "clippy.toml"
+    original = config.read_text()
+    config.write_text(original.replace('core::any::Any', 'other::Type'))
+    assert any("core::any::Any" in error for error in run(project, expected=1)[0]["errors"])
+    config.write_text(original)
+
+    member = project / "crates/member"
+    member.mkdir(parents=True)
+    (member / "Cargo.toml").write_text(
+        '[package]\nname = "member"\nversion = "0.1.0"\n'
+        'edition.workspace = true\nrust-version.workspace = true\n[lints]\nworkspace = true\n')
+    workspace = ('[workspace]\nmembers = ["crates/*"]\n[workspace.package]\n'
+                 'edition = "2024"\nrust-version = "1.91.1"\n' + lints.replace('[lints.', '[workspace.lints.'))
+    cargo.write_text(workspace)
+    assert run(project)[0]["packages"][0]["manifest"] == "crates/member/Cargo.toml"
+    local_config = member / "clippy.toml"
+    local_config.write_text('disallowed-types = []\ntoo-many-lines-threshold = 200\n')
+    errors = run(project, expected=1)[0]["errors"]
+    assert any("crates/member/clippy.toml: core::any::Any" in error for error in errors)
+    assert any("crates/member/clippy.toml: too-many-lines-threshold" in error for error in errors)
+    dotted_config = member / ".clippy.toml"
+    dotted_config.write_text(original)
+    run(project)
+    dotted_config.unlink()
+    local_config.unlink()
+    parent_config = member.parent / "clippy.toml"
+    parent_config.write_text('disallowed-types = []\n')
+    assert any("crates/clippy.toml: core::any::Any" in error for error in run(project, expected=1)[0]["errors"])
+    parent_config.unlink()
+    (member / "Cargo.toml").write_text(package)
+    assert any("unwrap_used" in error for error in run(project, expected=1)[0]["errors"])
+    cargo.write_text(workspace.replace('crates/*', 'missing/*'))
+    assert any("matched no paths" in error for error in run(project, expected=1)[0]["errors"])
+
+    cargo.write_text("[broken")
+    good = parent / "good"
+    good.mkdir()
+    for name, content in (("Cargo.toml", package + lints),
+                          ("rust-toolchain.toml", (project / "rust-toolchain.toml").read_text()),
+                          ("clippy.toml", (project / "clippy.toml").read_text())):
+        (good / name).write_text(content)
+    receipt = run(project, good, expected=1)
+    assert [item["status"] for item in receipt] == ["failed", "passed"]
+
+print("Rust baseline discovery, lint inheritance, drift, diagnostics, and read-only checks passed.")

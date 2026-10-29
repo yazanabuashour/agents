@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Compare local Cargo projects with the shared development baseline, without writes."""
+
+import argparse
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+
+RUST_LINTS = """
+let_underscore_drop unfulfilled_lint_expectations unsafe_code unsafe_op_in_unsafe_fn
+""".split()
+CLIPPY_LINTS = """
+allow_attributes allow_attributes_without_reason arithmetic_side_effects as_conversions
+as_pointer_underscore assertions_on_result_states cfg_not_test clone_on_ref_ptr dbg_macro
+default_union_representation disallowed_types empty_drop error_impl_error exit expect_used
+field_scoped_visibility_modifiers filetype_is_file fn_to_numeric_cast_any host_endian_bytes
+ignore_without_reason indexing_slicing infinite_loop iter_over_hash_type let_underscore_must_use
+let_underscore_untyped lossy_float_literal map_err_ignore mem_forget missing_assert_message
+mixed_read_write_in_expression multiple_unsafe_ops_per_block panic panic_in_result_fn
+partial_pub_fields pointer_format precedence_bits rest_pat_in_fully_bound_structs
+same_name_method string_slice suspicious_xor_used_as_pow todo too_many_lines try_err
+unchecked_time_subtraction undocumented_unsafe_blocks unimplemented unnecessary_safety_comment
+unnecessary_safety_doc unreachable unused_result_ok unwrap_used wildcard_dependencies
+wildcard_enum_match_arm
+""".split()
+
+
+def read_toml(path):
+    with path.open("rb") as source:
+        return tomllib.load(source)
+
+
+def version(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", value):
+        raise ValueError(f"invalid Rust version: {value!r}")
+    return tuple(int(part) for part in (value.split(".") + ["0"])[:3])
+
+
+def check_lints(lints, label, errors, stricter):
+    for group, names in (("rust", RUST_LINTS), ("clippy", CLIPPY_LINTS)):
+        values = lints.get(group, {})
+        for name in names + (["all", "pedantic", "nursery"] if group == "clippy" else []):
+            setting = values.get(name)
+            level = setting.get("level") if isinstance(setting, dict) else setting
+            priority = setting.get("priority", 0) if isinstance(setting, dict) else 0
+            expected_priority = -1 if name in ("all", "pedantic", "nursery") else 0
+            if level not in ("deny", "forbid") or priority != expected_priority:
+                errors.append(f"{label}: {group}.{name} requires deny/forbid, priority {expected_priority}")
+            elif level == "forbid":
+                stricter.append(f"{label}: {group}.{name}=forbid")
+
+
+def find_clippy_config(directory, root):
+    for parent in (directory, *directory.parents):
+        if not parent.is_relative_to(root):
+            break
+        for name in (".clippy.toml", "clippy.toml"):
+            path = parent / name
+            if path.is_file():
+                return path
+    raise ValueError(f"{directory}: no project-owned Clippy configuration found")
+
+
+def check_clippy(path, root, errors):
+    config = read_toml(path)
+    label = str(path.relative_to(root))
+    if config.get("too-many-lines-threshold", 100) != 100:
+        errors.append(f"{label}: too-many-lines-threshold differs from 100")
+    disallowed = config.get("disallowed-types", [])
+    paths = {item["path"] for item in disallowed if isinstance(item, dict)
+             and isinstance(item.get("path"), str) and item.get("reason")}
+    for name in ("std::any::Any", "core::any::Any"):
+        if name not in paths:
+            errors.append(f"{label}: {name} must be disallowed with a reason")
+
+
+def check_project(root):
+    errors, stricter, packages = [], [], []
+    result = {"project": str(root), "errors": errors, "stricter": stricter, "packages": packages}
+    try:
+        manifest = read_toml(root / "Cargo.toml")
+        toolchain = read_toml(root / "rust-toolchain.toml")["toolchain"]
+        pin = toolchain["channel"]
+        if not isinstance(pin, str) or not re.fullmatch(r"\d+\.\d+\.\d+", pin):
+            raise ValueError("rust-toolchain.toml must pin an exact stable release")
+        result["toolchain"] = pin
+        if toolchain.get("profile") != "minimal":
+            errors.append("rust-toolchain.toml: profile must be minimal")
+        if not {"clippy", "rustfmt", "rust-analyzer"}.issubset(toolchain.get("components", [])):
+            errors.append("rust-toolchain.toml: missing clippy, rustfmt, or rust-analyzer")
+        workspace = manifest.get("workspace", {})
+        if workspace:
+            check_lints(workspace.get("lints", {}), "workspace", errors, stricter)
+        manifests = {root / "Cargo.toml"} if "package" in manifest else set()
+        excluded = {path.resolve() for pattern in workspace.get("exclude", []) for path in root.glob(pattern)}
+        for pattern in workspace.get("members", []):
+            members = sorted(root.glob(pattern))
+            if not members:
+                errors.append(f"workspace member matched no paths: {pattern}")
+            for member in members:
+                if not member.resolve().is_relative_to(root.resolve()):
+                    raise ValueError(f"workspace member escapes project: {pattern}")
+                if member.resolve() not in excluded:
+                    manifests.add(member / "Cargo.toml")
+        if not manifests:
+            errors.append("no workspace packages found")
+        configs = {find_clippy_config(path.parent, root) for path in manifests}
+        for config in sorted(configs):
+            check_clippy(config, root, errors)
+        for path in sorted(manifests):
+            member = manifest if path == root / "Cargo.toml" else read_toml(path)
+            package = member["package"]
+            label = str(path.relative_to(root))
+            fields = {}
+            for key in ("edition", "rust-version"):
+                value = package.get(key)
+                if value == {"workspace": True}:
+                    value = workspace.get("package", {}).get(key)
+                fields[key] = value
+            packages.append({"manifest": label, **fields})
+            if fields["edition"] != "2024":
+                errors.append(f"{label}: edition must be 2024")
+            if version(fields["rust-version"]) > version(pin):
+                errors.append(f"{label}: rust-version exceeds pinned toolchain {pin}")
+            lints = member.get("lints", {})
+            if lints.get("workspace") is True:
+                if not workspace.get("lints") or set(lints) != {"workspace"}:
+                    errors.append(f"{label}: invalid workspace lint inheritance")
+            else:
+                check_lints(lints, label, errors, stricter)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        errors.append(str(error))
+    result["status"] = "failed" if errors else "passed"
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("projects", nargs="*", type=Path, help="project roots; defaults to direct children of --root")
+    parser.add_argument("--root", type=Path, default=Path.home() / "repo", help="parent directory for discovery (default: ~/repo)")
+    parser.add_argument("--json", action="store_true", help="emit the comparison receipt as JSON")
+    args = parser.parse_args()
+    try:
+        projects = args.projects or [path for path in sorted(args.root.iterdir())
+                                     if path.is_dir() and not path.is_symlink() and (path / "Cargo.toml").is_file()]
+        if not projects:
+            parser.error("no Cargo projects found")
+        results = [check_project(path.resolve()) for path in projects]
+    except OSError as error:
+        parser.error(str(error))
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for result in results:
+            print(f"{result['status'].upper()} {result['project']} (Rust {result.get('toolchain', '?')})")
+            for package in result["packages"]:
+                print(f"  {package['manifest']}: edition {package['edition']}, minimum Rust {package['rust-version']}")
+            for message in result["stricter"]:
+                print(f"  stricter: {message}")
+            for message in result["errors"]:
+                print(f"  error: {message}")
+    return int(any(result["errors"] for result in results))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
