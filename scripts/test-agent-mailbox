@@ -68,6 +68,13 @@ class MailboxTests(unittest.TestCase):
             ({"error": {"code": [], "statusCode": True}}, {"format": "error_object", "code": "unknown"}),
             ({"error": secret}, {"format": "unrecognized"}),
             (secret, {"format": "unrecognized"}),
+            (f"(node:123) Warning: {secret}\n" + mailbox.encode({"error": {
+                "code": "fetch_error", "statusCode": 503, "message": secret}}) + "\nextra warning",
+             {"format": "error_object", "code": "fetch_error", "http_status": 503}),
+            (f"Error: getaddrinfo EAI_AGAIN {secret}\ncode: 'EAI_AGAIN'",
+             {"format": "unrecognized", "network_codes": ["EAI_AGAIN"]}),
+            ({"error": {"code": "fetch_error", "message": f"Request timed out after 30s {secret}"}},
+             {"format": "error_object", "code": "fetch_error", "request_timeout": True}),
             ("", {"format": "empty"}),
         ]
         for stream in ("stdout", "stderr"):
@@ -87,8 +94,10 @@ class MailboxTests(unittest.TestCase):
                     record = mailbox.json.loads(path.read_text())
                     self.assertEqual(record["operation"], "inboxes threads list")
                     self.assertEqual(record["exit_status"], -15)
+                    metadata = {"bytes": len(content.encode()),
+                                "sha256": mailbox.hashlib.sha256(content.encode()).hexdigest()} if content else {}
                     self.assertEqual(record["diagnostics"][0 if stream == "stderr" else 1],
-                                     {"stream": stream, **expected})
+                                     {"stream": stream, **metadata, **expected})
                     self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                     self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
                     for value in (secret, INBOX, "private@example.test", "signature=secret", "body text"):

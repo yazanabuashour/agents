@@ -68,10 +68,28 @@ def failure_evidence(config, args, result):
               "diagnostics": []}
     for stream, content in (("stderr", result.stderr), ("stdout", result.stdout)):
         diagnostic = {"stream": stream, "format": "empty" if not content else "unrecognized"}
+        if content:
+            diagnostic["bytes"] = len(content.encode())
+            diagnostic["sha256"] = hashlib.sha256(content.encode()).hexdigest()
+            network_codes = sorted(set(re.findall(
+                r"\b(?:EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|"
+                r"ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b", content)))
+            if network_codes:
+                diagnostic["network_codes"] = network_codes
+            if re.search(r"\bRequest timed out after \d+(?:\.\d+)?s\b", content):
+                diagnostic["request_timeout"] = True
         try:
             response = json.loads(content)
         except (ValueError, RecursionError):
             response = None
+            for match in re.finditer(r"(?m)^\s*(?=\{)", content):
+                try:
+                    candidate, _ = json.JSONDecoder().raw_decode(content[match.end():])
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(candidate, dict) and isinstance(candidate.get("error"), dict):
+                    response = candidate
+                    break
         error = response.get("error") if isinstance(response, dict) else None
         if isinstance(error, dict):
             diagnostic["format"] = "error_object"
