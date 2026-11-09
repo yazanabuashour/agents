@@ -1,7 +1,7 @@
 ---
 name: agent-browser
 description: Use for browser automation, screenshots, extraction, web-app testing, Electron interaction, and cloud-browser workflows; also when standard web search or retrieval fails or misses content.
-compatibility: Requires stock agent-browser CLI configured with the personal profile and pinned tabs.
+compatibility: Requires stock agent-browser CLI configured to attach to the shared browser service.
 ---
 
 # agent-browser
@@ -31,39 +31,33 @@ For specialized tasks, use `agent-browser skills list`, then
 
 Prefer agent-browser for browser interaction, not over working search/fetch tools.
 When search/fetch tools fail or return incomplete content, continue
-research through browser search and rendered-page retrieval. Use headed browsing
-or an existing Chrome DevTools Protocol (CDP) session when visibility or human
-assistance is needed. Open saved screenshots with your image-reading tool.
-Use desktop screenshot/input tools only when browser commands cannot perform the
-interaction.
+research through browser search and rendered-page retrieval. Open saved
+screenshots with your image-reading tool. Use desktop screenshot/input tools only
+when browser commands cannot perform the interaction. If a page shows a challenge
+checkbox, click it once; if a challenge persists, stop and report it.
 
-## Personal profile and session ownership
+## Shared browser
 
-This policy expects stock CLI configuration to select
-`~/.local/share/agent-browser/profiles/personal` and pin tabs, including public
-browsing. If that setup is missing, report the blocker rather than changing
-configuration or creating a profile. Keep profiles and credentials local.
+Stock CLI configuration attaches every command to `agent-browser.service`, a
+browser that owns the persistent personal profile on a private display. If the
+CLI cannot connect, report the service as down rather than changing
+configuration. Public browsing uses this login state too.
+
 Use a unique named session per workflow, not just a worktree-derived name when
-agents share a worktree.
-
-Only one browser process may own the profile. Coordinate its launch; if occupied,
-attach to its owner or wait, never launch another browser against it. During
-concurrent use, reserve the owner session for browser lifetime management.
-Browse through distinct attached sessions using its `get cdp-url` result with
-`--cdp` on every command, including reads and cleanup. On first attachment, use
-`--pin-tab open <url>` to navigate the automatically allocated tab; starting with
-`tab new` leaves an extra blank tab.
-
-Pinned tabs prevent accidental tab switching, not access to shared authentication
-or other tabs. Preserve pre-existing tabs. Attached workflows close only their
-own tabs, then their session; the owner closes last. Track created target IDs and
-verify those tabs are closed before disconnecting. Never use `close --all` for
-workflow cleanup.
+agents share a worktree. A session's first command allocates and pins its own
+tab; navigate it with `open` rather than `tab new`, which leaves an extra blank
+tab. Pinning does not isolate authentication, storage, or other tabs. Close only
+tabs your workflow created, then your session; `close` disconnects without
+stopping the browser. Never use `close --all`.
 
 For explicitly clean browsing, use a fresh session and an empty JSON file via
-`--config` on every command, with inherited browser overrides cleared. Preserve
+`--config` on every command, with inherited browser overrides cleared. This
+launches a separate temporary browser that protected sites may flag. Preserve
 automations' existing run-local isolation.
 
-For manual sign-in, close the owner after all attached workflows finish, launch
-native Chromium with this profile and `--password-store=gnome-libsecret` without
-automation/debugging flags, then close it before automated reuse.
+To sign in, use `agent-browser auth login <name> --credential-provider vault
+--item <agent vault item>`; the password goes from the vault to the page, not
+through you. For manual sign-in, wait until all browser workflows finish, run
+`systemctl --user stop agent-browser.service`, sign in with
+`chromium --user-data-dir="$HOME/.local/share/agent-browser/profiles/personal"`
+on the desktop, close it, then start the service again.
