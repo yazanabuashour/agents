@@ -223,13 +223,14 @@ if [[ -s $patch_file ]] && ! git apply --reverse --check --whitespace=nowarn -- 
   printf 'error: invalid or stale patch; see %s/patch-check.log\n' "$review_dir" >&2
   exit 1
 fi
-if [[ -s $patch_file ]]; then
-  REVIEW_MODEL="${REVIEW_MODEL:-$(model-role deep)}"
-  [[ -n $REVIEW_MODEL ]] || error 'review model is empty'
+model_args=()
+[[ -z ${REVIEW_MODEL:-} ]] || model_args=(--model "$REVIEW_MODEL")
+if [[ ! -s $patch_file ]]; then
+  model_summary='not requested (empty patch)'
 else
-  REVIEW_MODEL='not requested (empty patch)'
+  model_summary="${REVIEW_MODEL:-Pi default}"
 fi
-printf 'Model argument: %s\n' "$REVIEW_MODEL" >>"$summary_file"
+printf 'Model argument: %s\n' "$model_summary" >>"$summary_file"
 prepared_state_hash="$(worktree_hash)"
 printf 'Worktree prepared: %s\n' "$prepared_state_hash" >>"$summary_file"
 if [[ $prepared_state_hash != "$review_state_hash" ]]; then
@@ -267,7 +268,7 @@ run_pi() {
     # Retain the group leader until every owned group member receives cleanup.
     kill -KILL -- "-$$"
   ' checkpoint-review-supervisor "$3" \
-    --print --no-session --model "$REVIEW_MODEL" --thinking "$1" \
+    --print --no-session "${model_args[@]}" --thinking "$1" \
     --no-approve --no-extensions --no-skills --no-prompt-templates --tools read,grep,find \
     "@$patch_file" "@$context_file" "$2"
 }

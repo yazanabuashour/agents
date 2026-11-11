@@ -7,10 +7,6 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
       [[ ${CHECKPOINT_REVIEW_TEST_PREFLIGHT:-} != "${0##*/}" && ${CHECKPOINT_REVIEW_TEST_PREFLIGHT:-} != all-fd ]]
       exit
       ;;
-    model-role)
-      printf 'openai/fixture-deep\n'
-      exit
-      ;;
     forbidden)
       touch "$CHECKPOINT_REVIEW_TEST_OUTPUT/helper-ran"
       exit 99
@@ -96,7 +92,7 @@ tmp_dir="$temp_root/tmp"
 patch="$temp_root/approved.patch"
 context="$temp_root/context.md"
 mkdir -p "$repo" "$bin_dir" "$output_dir" "$tmp_dir"
-for name in pi model-role git fd fdfind rg forbidden; do
+for name in pi git fd fdfind rg forbidden; do
   ln -s -- "$root/scripts/test-checkpoint-review" "$bin_dir/$name"
 done
 
@@ -216,7 +212,7 @@ for args_file in "$output_dir"/args.*.bin; do
     [[ " ${args[*]} " == *" $flag "* ]]
   done
   for flag in --no-context-files --extension; do [[ " ${args[*]} " != *" $flag "* ]]; done
-  assert_arg_pair "$args_file" --model openai/fixture-deep
+  [[ " ${args[*]} " != *" --model "* ]]
   assert_arg_pair "$args_file" --tools read,grep,find
   attachments=()
   for arg in "${args[@]}"; do [[ $arg != @* ]] || attachments+=("${arg#@}"); done
@@ -225,7 +221,7 @@ for args_file in "$output_dir"/args.*.bin; do
   cmp "$context" "${attachments[1]}"
   [[ $(stat -c %a "${attachments[0]}") == 400 && $(stat -c %a "${attachments[1]}") == 400 ]]
 done
-for receipt in 'Model argument: openai/fixture-deep' 'correctness=high simplification=medium' 'Start UTC:' 'End UTC:' 'Worktree before:' 'Worktree prepared:' 'Worktree after:' 'Exit status: 0'; do
+for receipt in 'Model argument: Pi default' 'correctness=high simplification=medium' 'Start UTC:' 'End UTC:' 'Worktree before:' 'Worktree prepared:' 'Worktree after:' 'Exit status: 0'; do
   grep -F "$receipt" "$summary" >/dev/null
 done
 for input in "$patch" "$context"; do grep -F "$(git hash-object --no-filters "$input")" "$summary" >/dev/null; done

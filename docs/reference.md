@@ -65,10 +65,8 @@ Configure and authenticate tools outside this repository. Follow the
 
 ## Select a checkpoint-review model
 
-Set `REVIEW_MODEL` to an available Pi `provider/model-id` before running
-`checkpoint-review`. The command's fallback calls the external `model-role deep`
-helper; that helper and its local configuration are not distributed here. Users
-of that fallback must retain their helper and its dependencies, including jq.
+`checkpoint-review` uses Pi's default model. Set `REVIEW_MODEL` to an available
+Pi `provider/model-id` to override it.
 
 Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to prepare the
 approved patch, run reviewers, and handle findings. Any harness can invoke the
