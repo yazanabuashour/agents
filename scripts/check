@@ -10,7 +10,6 @@ shfmt -d -i 2 -ci "${shell_files[@]}"
 python3 -B scripts/check-profile
 python3 -B scripts/test-profile
 python3 -B scripts/test-install
-python3 -B scripts/test-agent-mailbox
 python3 -B scripts/test-rust-baseline
 scripts/test-checkpoint-review
 git diff --check

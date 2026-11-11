@@ -23,8 +23,6 @@ scripts/check
   in-place instruction-link adoption, ownership migration,
   add/rename/retire cleanup, local conflicts, receipt validation, backups,
   idempotence, preview immutability, and symlink refusal in disposable homes.
-- `scripts/test-agent-mailbox`: durable discovery, reviewed and uncertain sends,
-  export integrity, and download safety with offline fixtures.
 - `scripts/test-checkpoint-review`: input validation, dispatch, worktree
   protection, and process cleanup with mock reviewers.
 - `scripts/test-rust-baseline`: discovery, workspace lint inheritance, drift
