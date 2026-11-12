@@ -33,8 +33,7 @@ Prefer agent-browser for browser interaction, not over working search/fetch tool
 When search/fetch tools fail or return incomplete content, continue
 research through browser search and rendered-page retrieval. Open saved
 screenshots with your image-reading tool. Use desktop screenshot/input tools only
-when browser commands cannot perform the interaction. If a page shows a challenge
-checkbox, click it once; if a challenge persists, stop and report it.
+when browser commands cannot perform the interaction. Complete all challenge stages through normal UI. Report stage counts, retries, outcomes, and human assistance by site after the task. Prioritize unblocking yourself first, and if that doesn't work only then request.
 
 ## Shared browser
 
