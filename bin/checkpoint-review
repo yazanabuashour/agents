@@ -223,13 +223,9 @@ if [[ -s $patch_file ]] && ! git apply --reverse --check --whitespace=nowarn -- 
   printf 'error: invalid or stale patch; see %s/patch-check.log\n' "$review_dir" >&2
   exit 1
 fi
-model_args=()
-[[ -z ${REVIEW_MODEL:-} ]] || model_args=(--model "$REVIEW_MODEL")
-if [[ ! -s $patch_file ]]; then
-  model_summary='not requested (empty patch)'
-else
-  model_summary="${REVIEW_MODEL:-Pi default}"
-fi
+model="${REVIEW_MODEL:-openai/gpt-6.2-sol}"
+model_summary="$model"
+[[ -s $patch_file ]] || model_summary='not requested (empty patch)'
 printf 'Model argument: %s\n' "$model_summary" >>"$summary_file"
 prepared_state_hash="$(worktree_hash)"
 printf 'Worktree prepared: %s\n' "$prepared_state_hash" >>"$summary_file"
@@ -268,7 +264,7 @@ run_pi() {
     # Retain the group leader until every owned group member receives cleanup.
     kill -KILL -- "-$$"
   ' checkpoint-review-supervisor "$3" \
-    --print --no-session "${model_args[@]}" --thinking "$1" \
+    --print --no-session --model "$model" --thinking "$1" \
     --no-approve --no-extensions --no-skills --no-prompt-templates --tools read,grep,find \
     "@$patch_file" "@$context_file" "$2"
 }

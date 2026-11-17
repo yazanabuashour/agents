@@ -63,8 +63,9 @@ Configure and authenticate tools outside this repository. Follow the
 
 ## Select a checkpoint-review model
 
-`checkpoint-review` uses Pi's default model. Set `REVIEW_MODEL` to an available
-Pi `provider/model-id` to override it.
+Set `REVIEW_MODEL` to an available Pi `provider/model-id` to override the
+[launcher's model](../bin/checkpoint-review). Each `--review` argument sets
+its own thinking effort.
 
 Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to prepare the
 approved patch, run reviewers, and handle findings. Any harness can invoke the
