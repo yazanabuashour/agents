@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import difflib
 import hashlib
 import json
 import os
@@ -179,13 +178,13 @@ def main():
         for source in sorted((root / "bin").iterdir()) if source.is_file()
     )
     desired = {}
-    contents = {}
+    copies = {}
     for source, name, mode in files:
         if source.is_symlink() or not source.is_file():
             fail(f"Source must be a regular file: {source}")
         content = source.read_bytes()
         desired[name] = {"sha256": hashlib.sha256(content).hexdigest(), "mode": mode}
-        contents[name] = content
+        copies[name] = (source.relative_to(root), content)
 
     desired.update({name: {"target": target} for name, target in INSTRUCTION_LINKS.items()})
 
@@ -286,17 +285,8 @@ def main():
         elif "target" in after:
             print(f"Link: {target} -> {after['target']}")
         else:
-            print(f"Copy: {target} (mode {oct(after['mode'])})")
-            before = target.read_bytes() if target.exists() else b""
-            try:
-                before_text, after_text = before.decode(), contents[name].decode()
-            except UnicodeDecodeError:
-                print("Non-UTF-8 content; no text diff. Inspect the source before applying.")
-            else:
-                print("".join(difflib.unified_diff(
-                    before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
-                    fromfile=str(target), tofile=name,
-                )), end="")
+            source, _ = copies[name]
+            print(f"Copy: {source} -> {target} (mode {oct(after['mode'])})")
     for name in trimmed:
         print(f"Remove empty owned directory: {home / name}")
     if receipt_changed:
@@ -331,7 +321,8 @@ def main():
             if "target" in after:
                 target.symlink_to(after["target"], target_is_directory=name not in INSTRUCTION_LINKS)
             else:
-                atomic_write(target, contents[name], after["mode"])
+                _, content = copies[name]
+                atomic_write(target, content, after["mode"])
     for name in trimmed:
         (home / name).rmdir()
     atomic_write(receipt_path, (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode(), 0o600)

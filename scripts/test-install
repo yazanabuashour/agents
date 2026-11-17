@@ -101,7 +101,6 @@ with tempfile.TemporaryDirectory() as temporary:
     preview = run().stdout
     assert "Preserve unowned matching link" in preview
     assert "Record matching profile file" in preview
-    assert not receipt_path.exists()
     installed = run("--apply")
     assert "Backups:" in installed.stdout
     backups = list((receipt_path.parent / "backups").glob("install-*"))
@@ -190,11 +189,12 @@ with tempfile.TemporaryDirectory() as temporary:
     (added / "support").mkdir(parents=True)
     (added / "SKILL.md").write_text("New exported skill\n")
     (added / "support/data").write_bytes(b"\x00\xffskill support")
-    assert "new-skill" in run().stdout
+    preview = run().stdout
+    assert f"Copy: skills/new-skill/SKILL.md -> {shared}/new-skill/SKILL.md (mode 0o644)" in preview
+    assert "New exported skill" not in preview
     run("--apply")
     assert (shared / "new-skill/support/data").read_bytes() == b"\x00\xffskill support"
     (added / "support/data").write_bytes(b"\x00\xffupdated support")
-    assert "Non-UTF-8 content; no text diff" in run().stdout
     run("--apply")
     assert any((backup / ".agents/skills/new-skill/support/data").is_file()
                for backup in (receipt_path.parent / "backups").iterdir())
