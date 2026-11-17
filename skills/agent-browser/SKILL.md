@@ -22,10 +22,8 @@ details; do not preload it. These guides match the installed CLI version.
 The personal session rules below override generic profile, isolation, and
 cleanup examples in those guides.
 
-For specialized tasks, use `agent-browser skills list`, then
-`agent-browser skills get <name>` for the relevant guide: `electron`, `slack`,
-`dogfood` (exploratory testing), `derive-client` (API extraction),
-`vercel-sandbox`, `protected-vercel-deployments`, or `agentcore`.
+For specialized tasks, find the relevant guide with `agent-browser skills list`
+and load it with `agent-browser skills get <name>`.
 
 ## Research and interaction
 
