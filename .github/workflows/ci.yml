@@ -19,5 +19,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install check dependencies
-        run: sudo apt-get update && sudo apt-get install --yes git python3 python3-yaml shellcheck shfmt procps util-linux
+        run: sudo apt-get update && sudo apt-get install --yes git python3 python3-yaml shellcheck procps util-linux
+      - name: Install shfmt
+        run: |
+          bin=$(mktemp -d)
+          cd "$bin" || exit 1
+          curl -fsSLo shfmt https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64
+          echo '76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf  shfmt' | sha256sum --check
+          chmod +x shfmt
+          echo "$bin" >> "$GITHUB_PATH"
       - run: scripts/check
