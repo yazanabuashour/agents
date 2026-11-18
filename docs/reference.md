@@ -52,6 +52,7 @@ provide missing tools, or enforce model behavior.
 | `agent-browser` | Stock CLI, personal persistent-profile configuration, pinned tabs, and an available credential store |
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
 | `council` | A way to start independent agents on the chosen models |
+| `grocery-plan` | `notes` with a grocery planning note, web search or fetch, and `agent-browser` for retailer pages |
 | `technical-writing` | No executable workflow dependency |
 
 See the [notes skill](../skills/notes/SKILL.md) for local reading, writing, and
