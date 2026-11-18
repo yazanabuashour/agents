@@ -55,7 +55,7 @@ for name in sources:
                 raise SystemExit(f"Missing local link target in {source}: {link}")
 
 baseline = (root / "instructions/AGENTS.md").read_text()
-if re.search(r"Todoist|agent-browser|~/notes", baseline):
+if re.search(r"agent-browser|~/notes", baseline):
     raise SystemExit("Conditional personal workflows must stay out of the baseline.")
 writing = root / "skills/technical-writing"
 writing_metadata = yaml.safe_load((writing / "SKILL.md").read_text().split("---", 2)[1])

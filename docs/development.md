@@ -64,9 +64,9 @@ installer, not hand-maintained skill lists or dotfiles. Check the exported basel
 and skill files, loading-link targets, ownership receipt, application-owned entries,
 and automatic technical-writing eligibility. Exercise cleanup only through recorded
 ownership, including local-change conflicts and untouched unowned links. Verify
-that notes and Todoist load the sibling writing skill for drafted or materially
-rewritten prose, not reads, state changes, or verbatim captures. Preserve unrelated
-manual-only invocation policies. Keep skill descriptions limited to triggers.
+that notes loads the sibling writing skill for drafted or materially rewritten
+prose, not reads or verbatim captures. Preserve unrelated manual-only invocation
+policies. Keep skill descriptions limited to triggers.
 Run native-agent checks without real accounts or workflow writes; do not infer
 loading from an assistant's claim that it read a file.
 
@@ -80,3 +80,11 @@ After checks and any required or approved review, follow the
 [installation preview](install.md#inspect-and-install). Compare changed installed
 files with source. Start a new session to refresh instructions and discovery;
 do not reload existing sessions without approval.
+
+## Deploy Executor apps
+
+`executor/<app>/` holds source for Executor apps this profile owns;
+`scripts/install-local` does not install them. After checks, follow the Executor
+`app-authoring` skill's `deploy.md`: commit the complete directory to the app
+with the matching name and deploy that commit. Confirm the result with the
+Executor MCP `skills` tool.

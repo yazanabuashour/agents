@@ -21,8 +21,8 @@ Review the planned paths and permissions. Copy lines name the checkout-relative
 source and the destination. Inspect the source; if the destination exists,
 compare the two files before applying.
 Adapt personal preferences before installing, including local `~/notes`
-organization, Todoist board conventions, and browser-session policy. Do not add
-credentials, private account data, or machine configuration to this checkout.
+organization and browser-session policy. Do not add credentials, private account
+data, or machine configuration to this checkout.
 
 Install the reviewed plan:
 
