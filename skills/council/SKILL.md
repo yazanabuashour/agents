@@ -7,17 +7,16 @@ disable-model-invocation: true
 
 # Council
 
-Two to seven independent members rate the subject in each category. You fix the
-valid feedback and repeat with fresh members until every member rates every
-category at or above the target.
+Independent members rate the subject in each category. You fix the valid
+feedback and repeat with fresh members until every member rates every category
+at or above the target.
 
 ## Set up
 
 Take these from the request. Ask only for members and for a subject the request
 does not name.
 
-- **Members:** two to seven, each a model and optional settings such as thinking
-  effort.
+- **Members:** each a model and optional settings such as thinking effort.
 - **Subject:** an app, CLI, service, API, SDK, or other work.
 - **Control:** optional. A comparable product or design rated alongside the
   subject for comparison; its scores never count toward the target.
