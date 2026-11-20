@@ -29,8 +29,12 @@ See [installation and ownership migration](install.md) for receipt and conflict 
 Pi, Codex, and OpenCode discover `~/.agents/skills` directly. Claude Code uses
 per-skill links in `~/.claude/skills`, reconciled from the installed shared collection
 by `scripts/install-local`; update the shared file, not a harness copy.
-Keep invocation-scoped skills outside these discovery directories and load them
-explicitly for the task that needs them.
+Install a skill only for a task that people start by name or that any session
+may need. When only a person should start it, set `disable-model-invocation: true`
+and, for Codex, `policy.allow_implicit_invocation: false` in `agents/openai.yaml`;
+the skill then stays out of other sessions' context. Scheduled jobs keep their
+instructions in their own repositories and pass them as the prompt, not as a
+skill.
 
 You can invoke technical writing directly:
 
@@ -51,7 +55,6 @@ provide missing tools, or enforce model behavior.
 | `agent-browser` | Stock CLI, personal persistent-profile configuration, pinned tabs, and an available credential store |
 | `checkpoint-review` | Linux, Bash, Git, native Pi, `rg`, `fd` or `fdfind`, and a configured review model |
 | `council` | A way to start independent agents on the chosen models |
-| `grocery-plan` | `notes` with a grocery planning note, web search or fetch, and `agent-browser` for retailer pages |
 | `technical-writing` | No executable workflow dependency |
 
 See the [notes skill](../skills/notes/SKILL.md) for local reading, writing, and
