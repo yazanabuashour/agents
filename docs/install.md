@@ -140,3 +140,5 @@ scripts/install-local --apply
 
 The plan reconciles added, renamed, and retired exports and owned harness
 links. It does not reload sessions or rewrite agent settings.
+`scripts/install-local --check` prints the same plan without applying it and
+exits nonzero when anything is pending.

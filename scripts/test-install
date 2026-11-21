@@ -101,7 +101,10 @@ with tempfile.TemporaryDirectory() as temporary:
     preview = run().stdout
     assert "Preserve unowned matching link" in preview
     assert "Record matching profile file" in preview
+    check = run("--check", error="Installed profile differs from source")
+    assert check.stdout.splitlines() == preview.splitlines()[:-1], "--check prints the preview's plan"
     installed = run("--apply")
+    assert "already match" in run("--check").stdout
     assert "Backups:" in installed.stdout
     backups = list((receipt_path.parent / "backups").glob("install-*"))
     assert len(backups) == 1

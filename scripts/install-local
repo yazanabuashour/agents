@@ -133,9 +133,12 @@ def atomic_write(target, content, mode):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Preview profile copies, harness instruction links, Claude skill links, and ownership cleanup; --apply installs."
+        description="Preview profile copies, harness instruction links, Claude skill links, and ownership cleanup; "
+                    "--apply installs and --check fails when the installed profile differs from source."
     )
-    parser.add_argument("--apply", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--check", action="store_true")
     parser.add_argument("--adopt-instruction-links", action="store_true",
                         help="Record ownership of existing instruction links with the exact expected targets; "
                              "retire the previous owner's declarations first.")
@@ -291,11 +294,15 @@ def main():
         print(f"Remove empty owned directory: {home / name}")
     if receipt_changed:
         print(f"Record ownership: {receipt_path}")
-    if not args.apply:
-        adoption = " --adopt-instruction-links" if args.adopt_instruction_links else ""
-        print(f"Preview only. Run scripts/install-local{adoption} --apply to install this plan.")
+    pending = bool(changes or trimmed or receipt_changed)
+    adoption = " --adopt-instruction-links" if args.adopt_instruction_links else ""
+    apply_command = f"scripts/install-local{adoption} --apply"
+    if args.check and pending:
+        fail(f"Installed profile differs from source; run {apply_command} to install this plan.")
+    if not args.apply and not args.check:
+        print(f"Preview only. Run {apply_command} to install this plan.")
         return
-    if not changes and not trimmed and not receipt_changed:
+    if not pending:
         print("Personal agent files and harness links already match.")
         return
 

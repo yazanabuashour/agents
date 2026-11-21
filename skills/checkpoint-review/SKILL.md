@@ -60,15 +60,14 @@ when the delta changes tests. Keep correctness and simplification separate.
 Use other focuses only for a concrete risk or requirement; see
 `checkpoint-review --help`.
 
-Use background execution only when the host tracks completion and automatically
-resumes the agent. In Pi, use `bg_start` with title `Checkpoint review: <repo>`.
-Dispatch worktree commands sequentially unless measured provider capacity
+Use background execution only when the host resumes the agent on completion or
+can wait on the job. In Pi, use `bg_start` with title `Checkpoint review: <repo>`,
+then `bg_status` with `wait` once no independent work remains. Dispatch worktree commands sequentially unless measured provider capacity
 supports parallel dispatch. Otherwise run synchronously.
 
 While review runs, freeze that worktree and stop other writers. The command
-detects changes; it does not lock the tree. Continue independent work or end
-the turn and await the completion message. Do not poll in a loop or use bare
-sleeps to wait.
+detects changes; it does not lock the tree. Continue independent work, then
+wait for the result. Do not poll in a loop or use bare sleeps to wait.
 
 ## Settle
 

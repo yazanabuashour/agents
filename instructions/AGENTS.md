@@ -21,16 +21,9 @@ Use these terms consistently when discussing design and implementation:
   Judge obviousness from the reader's perspective. An obvious solution may
   require more parts than a merely simple one.
 
-# Writing and documentation
+# Writing
 
-- Lead with the point. Use active voice, plain language, and defined acronyms.
-- Document only what code, configuration, or existing docs do not convey,
-  organized around reader tasks. Prefer trimming to adding; cut filler and
-  ornamental prose.
-- Verify commands, examples, links, and documented behavior against the
-  implementation.
-- Preserve project vocabulary, literal code, commands, paths, quotations, and
-  technical meaning.
+Lead with the point. Use active voice, plain language, and defined acronyms.
 
 # Code and design
 
