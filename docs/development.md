@@ -80,11 +80,3 @@ After checks and any required or approved review, follow the
 [installation preview](install.md#inspect-and-install). Compare changed installed
 files with source. Start a new session to refresh instructions and discovery;
 do not reload existing sessions without approval.
-
-## Deploy Executor apps
-
-`executor/<app>/` holds source for Executor apps this profile owns;
-`scripts/install-local` does not install them. After checks, follow the Executor
-`app-authoring` skill's `deploy.md`: commit the complete directory to the app
-with the matching name and deploy that commit. Confirm the result with the
-Executor MCP `skills` tool.
