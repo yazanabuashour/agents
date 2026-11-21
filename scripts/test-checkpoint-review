@@ -12,7 +12,7 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
       exit 99
       ;;
     git)
-      if [[ ${1:-} == apply && ${CHECKPOINT_REVIEW_TEST_MODE:-} == prepare ]]; then
+      if [[ " $* " == *' write-tree '* && ${CHECKPOINT_REVIEW_TEST_MODE:-} == prepare ]]; then
         "$CHECKPOINT_REVIEW_TEST_REAL_GIT" "$@"
         printf 'preparation mutation\n' >>"$CHECKPOINT_REVIEW_TEST_REPO/unrelated.txt"
         exit
@@ -89,7 +89,7 @@ repo="$temp_root/repo"
 bin_dir="$temp_root/bin"
 output_dir="$temp_root/output"
 tmp_dir="$temp_root/tmp"
-patch="$temp_root/approved.patch"
+base=HEAD
 context="$temp_root/context.md"
 mkdir -p "$repo" "$bin_dir" "$output_dir" "$tmp_dir"
 for name in pi git fd fdfind rg forbidden; do
@@ -106,7 +106,6 @@ printf 'nested baseline\n' >"$repo/directory/file.txt"
 git -C "$repo" add tracked.txt hidden.txt directory/file.txt
 git -C "$repo" commit --quiet -m baseline
 printf 'Requirements: approved edit only.\nNon-goals: unrelated cleanup.\nPrior decision: retain earlier work.\n' >"$context"
-: >"$patch"
 review_script="$root/bin/checkpoint-review"
 base_env=(
   PATH="$bin_dir:$PATH" REVIEW_MODEL= TMPDIR="$tmp_dir"
@@ -115,7 +114,7 @@ base_env=(
   CHECKPOINT_REVIEW_TEST_READY="$temp_root/ready" CHECKPOINT_REVIEW_TEST_RELEASE="$temp_root/release"
 )
 required_reviews=(--review correctness high --review simplification medium)
-review_args=(--repo "$repo" --patch "$patch" --context "$context" "${required_reviews[@]}")
+review_args=(--repo "$repo" --base "$base" --context "$context" "${required_reviews[@]}")
 # Relative input files resolve from the invocation directory, not the worktree.
 cd "$temp_root"
 
@@ -161,21 +160,24 @@ summary_path() {
 shopt -s nullglob
 
 expect_status 0 "$review_script" --help
-for omitted in repo patch context; do
+for omitted in repo base context; do
   args=()
-  for option in repo patch context; do
+  for option in repo base context; do
     [[ $option == "$omitted" ]] || args+=("--$option" "${!option}")
   done
   reject "${args[@]}" "${required_reviews[@]}"
 done
-reject --repo repo --patch "$patch" --context "$context" "${required_reviews[@]}"
-reject --repo "$temp_root" --patch "$patch" --context "$context" "${required_reviews[@]}"
-reject --repo "$repo" --patch "$patch" --context "$context" --review correctness low
+reject --repo repo --base HEAD --context "$context" "${required_reviews[@]}"
+reject --repo "$temp_root" --base HEAD --context "$context" "${required_reviews[@]}"
+reject --repo "$repo" --base missing --context "$context" "${required_reviews[@]}"
+reject --repo "$repo" --base HEAD --context "$context" --review correctness low
 for extra in '--review correctness low' '--review complexity high' '--review security ultra'; do
   read -r -a args <<<"$extra"
   reject "${review_args[@]}" "${args[@]}"
 done
-reject "${review_args[@]}" --patch "$patch"
+reject "${review_args[@]}" --base HEAD
+reject "${review_args[@]}" --path ' '
+reject baseline --repo repo
 reject "${review_args[@]}" --custom-review low ' '
 reject "${review_args[@]}" --custom-review low custom --custom-review low duplicate
 for dependency in all-fd rg; do
@@ -183,28 +185,25 @@ for dependency in all-fd rg; do
   assert_invocation_count 0
 done
 
-# Empty input does not infer scope from either a clean or a dirty worktree.
-for content in baseline earlier-dirty; do
-  printf '%s\n' "$content" >"$repo/tracked.txt"
-  expect_status 0 run "${review_args[@]}"
-  assert_invocation_count 0
-done
-
-# The caller's baseline includes earlier dirty edits in the SAME file.
+# An unchanged worktree is a no-op whether it matches HEAD or a dirty baseline.
+expect_status 0 run "${review_args[@]}"
+assert_invocation_count 0
 printf 'earlier-dirty\n' >"$repo/tracked.txt"
-git -C "$repo" diff --no-ext-diff --no-textconv --binary >"$temp_root/earlier.patch"
+printf 'earlier untracked\n' >"$repo/untracked.txt"
+baseline="$(env "${base_env[@]}" "$review_script" baseline --repo "$repo")"
+[[ $(git -C "$repo" status --porcelain) == $' M tracked.txt\n?? untracked.txt' ]]
+expect_status 0 run --repo "$repo" --base "$baseline" --context "$context" "${required_reviews[@]}"
+assert_invocation_count 0
+
+# The baseline separates earlier dirty edits in the SAME file; --path excludes unrelated files.
 printf 'approved\n' >"$repo/tracked.txt"
 printf 'unrelated\n' >"$repo/unrelated.txt"
-cat >"$patch" <<'EOF'
-diff --git a/tracked.txt b/tracked.txt
---- a/tracked.txt
-+++ b/tracked.txt
-@@ -1 +1 @@
--earlier-dirty
-+approved
-EOF
-expect_status 0 run --repo "$repo" --patch approved.patch --context context.md "${required_reviews[@]}"
+printf '*.log\n' >"$repo/.git/info/exclude"
+printf 'forced\n' >"$repo/forced.log"
+git -C "$repo" add --force forced.log
+expect_status 0 run --repo "$repo" --base "$baseline" --path tracked.txt --path forced.log --context context.md "${required_reviews[@]}"
 assert_invocation_count 2
+grep -Fx 'Delta:' "$temp_root/stdout" >/dev/null
 summary="$(summary_path)"
 for args_file in "$output_dir"/args.*.bin; do
   mapfile -d '' -t args <"$args_file"
@@ -212,19 +211,22 @@ for args_file in "$output_dir"/args.*.bin; do
     [[ " ${args[*]} " == *" $flag "* ]]
   done
   for flag in --no-context-files --extension; do [[ " ${args[*]} " != *" $flag "* ]]; done
-  assert_arg_pair "$args_file" --model openai/gpt-6.2-sol
+  [[ " ${args[*]} " != *' --model '* ]]
   assert_arg_pair "$args_file" --tools read,grep,find
   attachments=()
   for arg in "${args[@]}"; do [[ $arg != @* ]] || attachments+=("${arg#@}"); done
   [[ ${#attachments[@]} == 2 ]]
-  cmp "$patch" "${attachments[0]}"
+  grep -Fx -- '-earlier-dirty' "${attachments[0]}" >/dev/null
+  grep -Fx -- '+approved' "${attachments[0]}" >/dev/null
+  grep -Fx -- '+forced' "${attachments[0]}" >/dev/null
+  if grep -F -e unrelated -e untracked "${attachments[0]}" >/dev/null; then exit 1; fi
   cmp "$context" "${attachments[1]}"
   [[ $(stat -c %a "${attachments[0]}") == 400 && $(stat -c %a "${attachments[1]}") == 400 ]]
 done
-for receipt in 'Model argument: openai/gpt-6.2-sol' 'correctness=high simplification=medium' 'Start UTC:' 'End UTC:' 'Worktree before:' 'Worktree prepared:' 'Worktree after:' 'Exit status: 0'; do
+for receipt in 'Model argument: Pi default' "Base tree: $baseline" 'Paths: tracked.txt forced.log' 'correctness=high simplification=medium' 'Start UTC:' 'End UTC:' 'Worktree before:' 'Worktree prepared:' 'Worktree after:' 'Exit status: 0'; do
   grep -F "$receipt" "$summary" >/dev/null
 done
-for input in "$patch" "$context"; do grep -F "$(git hash-object --no-filters "$input")" "$summary" >/dev/null; done
+grep -F "$(git hash-object --no-filters "$context")" "$summary" >/dev/null
 [[ $(stat -c %a "${summary%/*}") == 700 ]]
 
 # All options and effort values share one dispatch test, not five repeated runs.
@@ -247,19 +249,7 @@ done
 grep -F 'test-reduction-review status=0' "$summary" >/dev/null
 grep -F 'custom-review status=0' "$summary" >/dev/null
 
-# Reject stale, malformed, and unsafe patches without launching any reviewers.
-cp "$patch" "$temp_root/valid.patch"
-for invalid in stale malformed unsafe; do
-  case "$invalid" in
-    stale) cp "$temp_root/earlier.patch" "$patch" ;;
-    malformed) printf 'not a patch\n' >"$patch" ;;
-    unsafe) printf '%s\n' 'diff --git a/../outside b/../outside' '--- a/../outside' '+++ b/../outside' '@@ -1 +1 @@' '-before' '+after' >"$patch" ;;
-  esac
-  clear_output
-  expect_status 1 run "${review_args[@]}"
-  assert_invocation_count 0
-done
-cp "$temp_root/valid.patch" "$patch"
+# Generating the patch must not change the worktree.
 clear_output
 expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=prepare "$review_script" "${review_args[@]}"
 assert_invocation_count 0
@@ -310,10 +300,9 @@ done
 git -C "$sub_repo" -c protocol.file.allow=always submodule add --quiet "$sub_source" sub
 git -C "$sub_repo" commit --quiet -m submodule
 printf 'approved\n' >"$sub_repo/file.txt"
-git -C "$sub_repo" diff --binary --no-ext-diff --no-textconv -- file.txt >"$temp_root/sub.patch"
 printf 'earlier dirty\n' >"$sub_repo/sub/file.txt"
 expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_REPO="$sub_repo" CHECKPOINT_REVIEW_TEST_MODE=mutate-submodule \
-  "$review_script" --repo "$sub_repo" --patch "$temp_root/sub.patch" --context "$context" "${required_reviews[@]}"
+  "$review_script" --repo "$sub_repo" --base HEAD --context "$context" "${required_reviews[@]}"
 [[ $(<"$sub_repo/sub/file.txt") == 'submodule mutation' ]]
 
 # A failed reviewer cannot end the command before its sibling settles.
@@ -385,20 +374,19 @@ for mode in orphan-success orphan-cancel; do
 done
 exec {ready_fd}>&- {release_fd}>&-
 
-# Clean committed scope and unborn repositories also use the caller's patch.
+# Clean committed scope and unborn repositories also use the caller's base.
 git -C "$repo" add tracked.txt
 git -C "$repo" commit --quiet -m approved
-rm -- "$repo/unrelated.txt" "$repo/.gitattributes" "$repo/link"
+rm -- "$repo/unrelated.txt" "$repo/untracked.txt" "$repo/.gitattributes" "$repo/link"
 [[ -z $(git -C "$repo" status --porcelain) ]]
 clear_output
-expect_status 0 run "${review_args[@]}"
+expect_status 0 run --repo "$repo" --base HEAD~1 --context "$context" "${required_reviews[@]}"
 assert_invocation_count 2
 unborn="$temp_root/unborn"
 git init --quiet "$unborn"
+unborn_base="$(env "${base_env[@]}" "$review_script" baseline --repo "$unborn")"
 printf 'new\n' >"$unborn/new.txt"
-git -C "$unborn" add new.txt
-git -C "$unborn" diff --cached --no-ext-diff --no-textconv --binary >"$patch"
 clear_output
-expect_status 0 run --repo "$unborn" --patch "$patch" --context "$context" "${required_reviews[@]}"
+expect_status 0 run --repo "$unborn" --base "$unborn_base" --context "$context" "${required_reviews[@]}"
 assert_invocation_count 2
 printf 'Checkpoint review tests passed.\n'

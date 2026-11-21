@@ -6,13 +6,18 @@ set +m
 usage() {
   printf '%s\n' \
     'Usage:' \
-    "  checkpoint-review --repo ABSOLUTE_PATH --patch FILE --context FILE \\" \
+    '  checkpoint-review baseline --repo ABSOLUTE_PATH' \
+    "  checkpoint-review --repo ABSOLUTE_PATH --base REV [--path PATHSPEC]... --context FILE \\" \
     "    --review correctness EFFORT --review simplification EFFORT \\" \
     '    [--review TYPE EFFORT]... [--custom-review EFFORT PROMPT]' \
     '' \
-    'The caller supplies the approved before/after patch, including any prior' \
-    'uncommitted baseline, and task requirements, non-goals, and prior decisions.' \
-    'The patch must reverse-apply to the current worktree. An empty patch is a no-op.' \
+    'baseline records the worktree, including uncommitted and untracked files, as a' \
+    'Git tree and prints its hash. Run it before editing a dirty worktree; a clean' \
+    "worktree's baseline is HEAD." \
+    '' \
+    'Review sends reviewers the diff from --base to the current worktree, limited to' \
+    'the --path pathspecs when given, with the task requirements, non-goals, and prior' \
+    'decisions from --context. An empty diff is a no-op.' \
     '' \
     'Required review types: correctness, simplification' \
     'Optional review types: test-reduction, security, test-gaps, api-compat, concurrency, policy' \
@@ -37,16 +42,42 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   exit 0
 fi
 
+# Prints the tree of the worktree at $1: the real index's paths plus untracked files, all with worktree contents.
+snapshot_tree() {
+  local index_dir status=0
+  index_dir="$(mktemp -d "${TMPDIR:-/tmp}/checkpoint-review-index.XXXXXX")"
+  {
+    # Paths only: index flags such as skip-worktree must not hide worktree contents.
+    git -C "$1" ls-files --stage -z | GIT_INDEX_FILE="$index_dir/index" git -C "$1" update-index -z --index-info &&
+      GIT_INDEX_FILE="$index_dir/index" git -C "$1" -c advice.addEmbeddedRepo=false add --all -- . &&
+      GIT_INDEX_FILE="$index_dir/index" git -C "$1" write-tree
+  } || status=$?
+  rm -rf -- "$index_dir"
+  return "$status"
+}
+
+if [[ ${1:-} == baseline ]]; then
+  [[ $# == 3 && $2 == --repo && $3 == /* ]] || error 'usage: checkpoint-review baseline --repo ABSOLUTE_PATH'
+  git -C "$3" rev-parse --show-toplevel >/dev/null 2>&1 || error "not inside a git worktree: $3"
+  snapshot_tree "$(git -C "$3" rev-parse --show-toplevel)"
+  exit
+fi
+
 declare -A inputs=() efforts=()
-reviews=()
+reviews=() paths=()
 custom_prompt=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo | --patch | --context)
+    --repo | --base | --context)
       option="${1#--}"
-      [[ $# -ge 2 && -n ${2//[[:space:]]/} ]] || error "--$option requires a path"
+      [[ $# -ge 2 && -n ${2//[[:space:]]/} ]] || error "--$option requires a value"
       [[ ! ${inputs[$option]+set} ]] || error "--$option may be specified only once"
       inputs[$option]="$2"
+      shift 2
+      ;;
+    --path)
+      [[ $# -ge 2 && -n ${2//[[:space:]]/} ]] || error '--path requires a pathspec'
+      paths+=("$2")
       shift 2
       ;;
     --review | --custom-review)
@@ -74,17 +105,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for option in repo patch context; do
+for option in repo base context; do
   [[ ${inputs[$option]+set} ]] || error "--$option is required"
 done
 [[ ${inputs[repo]} == /* ]] || error '--repo requires an absolute path'
 for review_type in correctness simplification; do
   [[ ${efforts[$review_type]+set} ]] || error "--review $review_type EFFORT is required"
 done
-for option in patch context; do
-  [[ -f ${inputs[$option]} && -r ${inputs[$option]} ]] || error "--$option must be a readable file"
-  [[ ${inputs[$option]} == /* ]] || inputs[$option]="$PWD/${inputs[$option]}"
-done
+[[ -f ${inputs[context]} && -r ${inputs[context]} ]] || error '--context must be a readable file'
+[[ ${inputs[context]} == /* ]] || inputs[context]="$PWD/${inputs[context]}"
 
 for dependency in git pi setsid; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
@@ -111,6 +140,7 @@ fi
 
 repo_root="$(git -C "${inputs[repo]}" rev-parse --show-toplevel 2>/dev/null)" || error "not inside a git worktree: ${inputs[repo]}"
 cd "$repo_root"
+base_tree="$(git rev-parse --verify --quiet --end-of-options "${inputs[base]}^{tree}")" || error "--base is not a commit or tree: ${inputs[base]}"
 umask 077
 review_dir="$(mktemp -d "${TMPDIR:-/tmp}/checkpoint-review.XXXXXX")"
 summary_file="$review_dir/summary.txt"
@@ -211,34 +241,37 @@ worktree_hash() {
 } >"$summary_file"
 printf 'Repository: %s\nReview output: %s\n' "$repo_root" "$review_dir"
 review_state_hash="$(worktree_hash)"
-cp -- "${inputs[patch]}" "$patch_file"
+current_tree="$(snapshot_tree "$repo_root")"
+diff_args=(--no-ext-diff --no-textconv --no-color --ignore-submodules=none --submodule=short --src-prefix=a/ --dst-prefix=b/ "$base_tree" "$current_tree" -- "${paths[@]}")
+git diff --binary "${diff_args[@]}" >"$patch_file"
 cp -- "${inputs[context]}" "$context_file"
 chmod 400 "$patch_file" "$context_file"
 patch_hash="$(git hash-object --no-filters -- "$patch_file")"
 context_hash="$(git hash-object --no-filters -- "$context_file")"
-printf 'Git object hashes (%s):\nPatch: %s\nContext: %s\nWorktree before: %s\n' \
+printf 'Base tree: %s\nCurrent tree: %s\nPaths:' "$base_tree" "$current_tree" >>"$summary_file"
+if [[ ${#paths[@]} == 0 ]]; then printf ' (all)' >>"$summary_file"; else printf ' %q' "${paths[@]}" >>"$summary_file"; fi
+printf '\nGit object hashes (%s):\nPatch: %s\nContext: %s\nWorktree before: %s\n' \
   "$(git rev-parse --show-object-format)" "$patch_hash" "$context_hash" "$review_state_hash" >>"$summary_file"
+printf 'Delta:\n'
+git diff --stat=200 "${diff_args[@]}"
 
-if [[ -s $patch_file ]] && ! git apply --reverse --check --whitespace=nowarn -- "$patch_file" >"$review_dir/patch-check.log" 2>&1; then
-  printf 'error: invalid or stale patch; see %s/patch-check.log\n' "$review_dir" >&2
-  exit 1
-fi
-model="${REVIEW_MODEL:-openai/gpt-6.2-sol}"
-model_summary="$model"
-[[ -s $patch_file ]] || model_summary='not requested (empty patch)'
+model_args=()
+model_summary='Pi default'
+[[ -z ${REVIEW_MODEL:-} ]] || model_args=(--model "$REVIEW_MODEL") model_summary="$REVIEW_MODEL"
+[[ -s $patch_file ]] || model_summary='not requested (empty delta)'
 printf 'Model argument: %s\n' "$model_summary" >>"$summary_file"
 prepared_state_hash="$(worktree_hash)"
 printf 'Worktree prepared: %s\n' "$prepared_state_hash" >>"$summary_file"
 if [[ $prepared_state_hash != "$review_state_hash" ]]; then
-  printf 'error: worktree changed while preparing reviewer context; supply a current patch and rerun\n' >&2
+  printf 'error: worktree changed while preparing reviewer context; rerun\n' >&2
   exit 1
 fi
 if [[ ! -s $patch_file ]]; then
-  printf 'Empty patch; no review checkpoint was run.\n' | tee "$report_file"
+  printf 'Empty delta; no review checkpoint was run.\n' | tee "$report_file"
   exit 0
 fi
 
-review_prefix='Review only the approved delta in approved.patch against the requirements, non-goals, and prior decisions in task-context.md. The caller owns the before/after baseline, which may include earlier uncommitted edits. Use read-only tools to inspect relevant repository context and follow applicable context instructions. Inspect and report only. Do not edit files, run validation or another review gate, or delegate. Relate each actionable finding to the approved delta and supplied task contract. Put unrelated existing issues in a separate follow-up section, not checkpoint findings. To challenge an accepted decision, name it, provide new concrete failure evidence, and explain why the accepted constraints no longer suffice. Include severity, file:line references, the failure scenario or benefit, and the smallest safe fix. If there are no actionable findings for your focus, say so.'
+review_prefix='Review only the approved delta in approved.patch against the requirements, non-goals, and prior decisions in task-context.md. The caller chose its baseline, which may include earlier uncommitted edits. Use read-only tools to inspect relevant repository context and follow applicable context instructions. Inspect and report only. Do not edit files, run validation or another review gate, or delegate. Relate each actionable finding to the approved delta and supplied task contract. Put unrelated existing issues in a separate follow-up section, not checkpoint findings. To challenge an accepted decision, name it, provide new concrete failure evidence, and explain why the accepted constraints no longer suffice. Include severity, file:line references, the failure scenario or benefit, and the smallest safe fix. If there are no actionable findings for your focus, say so.'
 declare -A prompts=(
   [correctness]='Focus on defects introduced by the delta: functional bugs, behavior regressions, data loss, broken error handling, and contract violations. Trace developer-infrastructure changes through affected consumers; distinguish missed propagation from intentional project-owned differences. Ignore style unless it hides a defect.'
   [simplification]='Focus on making the delta smaller, clearer, and harder to misuse without changing required behavior. Prefer designs that eliminate the problem, then deterministic enforcement, then agent instructions only for necessary judgment. Flag instructions that spend recurring context on obvious or already-enforced behavior. Favor alternatives that complete the task while deleting more code than they add. Apply the Rule of Three and avoid speculative features. Identify unnecessary abstractions, wrappers, configuration, and compatibility machinery. Flag every added comment the code already conveys, every comment longer than one line except doc comments on exported declarations, and receipts, ticket IDs, dates, or history in code. Explaining rationale does not make a comment necessary. Check documentation for accuracy, content that existing docs already convey, point-in-time claims, and commands, examples, links, or behavior that disagree with the implementation; prefer trimming or deleting to adding. Do not reward compression or hidden behavior. Explain why each alternative preserves behavior.'
@@ -264,7 +297,7 @@ run_pi() {
     # Retain the group leader until every owned group member receives cleanup.
     kill -KILL -- "-$$"
   ' checkpoint-review-supervisor "$3" \
-    --print --no-session --model "$model" --thinking "$1" \
+    --print --no-session "${model_args[@]}" --thinking "$1" \
     --no-approve --no-extensions --no-skills --no-prompt-templates --tools read,grep,find \
     "@$patch_file" "@$context_file" "$2"
 }
@@ -295,7 +328,7 @@ cat "$report_file"
 final_state_hash="$(worktree_hash)"
 printf 'Worktree after: %s\n' "$final_state_hash" >>"$summary_file"
 if [[ $final_state_hash != "$review_state_hash" ]]; then
-  printf 'error: worktree changed while reviewers were running; supply a current patch and rerun\n' >&2
+  printf 'error: worktree changed while reviewers were running; rerun\n' >&2
   failed=1
 fi
 if [[ $(git hash-object --no-filters -- "$patch_file") != "$patch_hash" || $(git hash-object --no-filters -- "$context_file") != "$context_hash" ]]; then

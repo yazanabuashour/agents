@@ -67,13 +67,13 @@ Configure and authenticate tools outside this repository. Follow the
 
 ## Select a checkpoint-review model
 
-Set `REVIEW_MODEL` to an available Pi `provider/model-id` to override the
-[launcher's model](../bin/checkpoint-review). Each `--review` argument sets
-its own thinking effort.
+Reviewers use Pi's default model. Set `REVIEW_MODEL` to an available Pi
+`provider/model-id` to override it. Each `--review` argument sets its own
+thinking effort.
 
-Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to prepare the
-approved patch, run reviewers, and handle findings. Any harness can invoke the
+Follow [the checkpoint skill](../skills/checkpoint-review/SKILL.md) to record the
+baseline, run reviewers, and handle findings. Any harness can invoke the
 command; reviewers use native Pi with extensions and skills disabled.
-Git preparation trusts the checkout's Git configuration: reverse-patch checking
-can execute configured clean or process filters. This is not sandboxed by the
+Git preparation trusts the checkout's Git configuration: snapshotting the
+worktree can execute configured clean or process filters. This is not sandboxed by the
 reviewers' read-only tool list. Inspect untrusted Git configuration before use.

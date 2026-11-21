@@ -11,36 +11,35 @@ must read this skill for each distinct source checkpoint. The caller owns scope
 and the starting baseline. The command reviews supplied inputs; it does not
 infer authorization from Git status.
 
-## Prepare the approved delta
+## Record the baseline
 
-Preserve the baseline before editing. If the worktree starts clean, record its
-HEAD. If it already contains changes, preserve the relevant before-files or
-another recoverable baseline outside the worktree. Do not use an older HEAD as
-though those earlier changes belong to the new task. Do not alter the real Git
-index, create commits, or discard user changes merely to prepare review.
-
-Prepare a Git-compatible patch containing only the approved before/after
-changes, including approved new files. A file allowlist alone cannot separate
-successive edits to the same file. Use Git's binary patch support, disable
-external diff/text conversion, and inspect the patch before sending it. The
-command checks that the patch reverses against the current worktree without
-applying it. That check detects stale inputs, not missing task changes or user
-authorization. If the baseline cannot be recovered, report the scope blocker
-rather than silently reviewing all dirty files.
+Record where the task starts before editing. A clean worktree's baseline is its
+HEAD. Otherwise run
+`"$HOME/.local/bin/checkpoint-review" baseline --repo /absolute/path/to/worktree`
+and keep the printed tree hash; it captures uncommitted and untracked files
+without touching the real index. Do not use an older HEAD as though earlier
+changes belong to the new task. If no baseline was recorded and earlier changes
+cannot be separated, report the scope blocker rather than reviewing them.
 
 Write a short context file with:
 
 - The requested outcome and behavior that must remain.
 - Non-goals, unrelated changes, and accepted decisions with relevant receipts.
-- The baseline and how the patch was prepared.
+- The baseline and any `--path` scope.
 - Gates passed, failed, or unavailable, plus known limitations.
 
-Keep both inputs outside the worktree. Exclude secrets and unrelated content.
+Keep the context file outside the worktree. Exclude secrets and unrelated content.
 Reviewers may inspect repository context, but unrelated findings remain
 follow-up work. Reversing an accepted decision requires new concrete failure
 evidence, not a repeated preference.
 
 ## Dispatch
+
+The command reviews every change from the baseline to the current worktree,
+including files a changed ignore rule exposes, and prints the diffstat it sends.
+Before running it, decide which of those changes are approved. Limit the diff to
+the task's files with repeated `--path PATHSPEC` when others changed. If approved
+and unrelated edits share a file, report the scope blocker instead.
 
 Run exactly one command from the main session for each distinct source
 checkpoint. Use absolute worktree paths. Review shared source once, then
@@ -50,7 +49,7 @@ changes separately. Do not start a duplicate while one is in flight.
 ```sh
 "$HOME/.local/bin/checkpoint-review" \
   --repo /absolute/path/to/worktree \
-  --patch /absolute/path/to/approved.patch \
+  --base BASELINE \
   --context /absolute/path/to/task.md \
   --review correctness EFFORT \
   --review simplification EFFORT
