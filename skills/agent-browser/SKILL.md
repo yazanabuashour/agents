@@ -1,7 +1,7 @@
 ---
 name: agent-browser
 description: Use for browser automation, screenshots, extraction, web-app testing, Electron interaction, and cloud-browser workflows; also when standard web search or retrieval fails or misses content.
-compatibility: Requires stock agent-browser CLI configured to attach to the shared browser services.
+compatibility: Requires stock agent-browser CLI configured to attach to the shared browser service.
 ---
 
 # agent-browser
@@ -33,13 +33,12 @@ research through browser search and rendered-page retrieval. Open saved
 screenshots with your image-reading tool. Use desktop screenshot/input tools only
 when browser commands cannot perform the interaction. Complete all challenge stages through normal UI. Report stage counts, retries, outcomes, and human assistance by site after the task. Prioritize unblocking yourself first, and if that doesn't work only then request.
 
-## Shared browsers
+## Shared browser
 
-Stock CLI configuration attaches every command to `agent-browser@agent.service`,
-a persistent browser for agent-account work on a private display. The owner's
-own sign-ins live in `agent-browser@personal.service`; only when a task needs
-them, pass `--cdp 9222` on every command of that workflow. If the CLI cannot
-connect, report the service as down rather than changing configuration.
+Stock CLI configuration attaches every command to `agent-browser.service`, a
+browser that owns the persistent personal profile on a private display. If the
+CLI cannot connect, report the service as down rather than changing
+configuration. Public browsing uses this login state too.
 
 Use a unique named session per workflow, not just a worktree-derived name when
 agents share a worktree. A session's first command allocates and pins its own
@@ -53,10 +52,9 @@ For explicitly clean browsing, use a fresh session and an empty JSON file via
 launches a separate temporary browser that protected sites may flag. Preserve
 automations' existing run-local isolation.
 
-To sign in to an agent account, use `agent-browser auth login <name>
---credential-provider vault --item <agent vault item>`; the password goes from
-the vault to the page, not through you. For manual sign-in to profile NAME
-(`agent` or `personal`), wait until all browser workflows finish, run
-`systemctl --user stop agent-browser@NAME.service`, sign in with
-`chromium --user-data-dir="$HOME/.local/share/agent-browser/profiles/NAME"`
+To sign in, use `agent-browser auth login <name> --credential-provider vault
+--item <agent vault item>`; the password goes from the vault to the page, not
+through you. For manual sign-in, wait until all browser workflows finish, run
+`systemctl --user stop agent-browser.service`, sign in with
+`chromium --user-data-dir="$HOME/.local/share/agent-browser/profiles/personal"`
 on the desktop, close it, then start the service again.
