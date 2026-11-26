@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Report a vulnerability privately
-    url: https://github.com/yazanabuashour/agents/security/advisories/new
-    about: Do not disclose security vulnerabilities in a public issue.

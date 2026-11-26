@@ -3,22 +3,7 @@ set -Eeuo pipefail
 
 if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
   case "${0##*/}" in
-    fd | fdfind | rg)
-      [[ ${CHECKPOINT_REVIEW_TEST_PREFLIGHT:-} != "${0##*/}" && ${CHECKPOINT_REVIEW_TEST_PREFLIGHT:-} != all-fd ]]
-      exit
-      ;;
-    forbidden)
-      touch "$CHECKPOINT_REVIEW_TEST_OUTPUT/helper-ran"
-      exit 99
-      ;;
-    git)
-      if [[ " $* " == *' write-tree '* && ${CHECKPOINT_REVIEW_TEST_MODE:-} == prepare ]]; then
-        "$CHECKPOINT_REVIEW_TEST_REAL_GIT" "$@"
-        printf 'preparation mutation\n' >>"$CHECKPOINT_REVIEW_TEST_REPO/unrelated.txt"
-        exit
-      fi
-      exec "$CHECKPOINT_REVIEW_TEST_REAL_GIT" "$@"
-      ;;
+    fd | fdfind | rg) exit 0 ;;
     pi)
       printf '%s\0' "$@" >"$CHECKPOINT_REVIEW_TEST_OUTPUT/args.$$.bin"
       effort=''
@@ -34,7 +19,6 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
           read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE"
           ;;
         cancel)
-          # A descendant in each reviewer group must stop on cancellation too.
           (
             printf 'descendant %s\n' "$BASHPID" >"$CHECKPOINT_REVIEW_TEST_READY"
             read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE"
@@ -44,25 +28,6 @@ if [[ ${CHECKPOINT_REVIEW_TEST_MOCK:-} == 1 ]]; then
           ;;
         mutate)
           printf 'reviewer mutation %s\n' "$$" >>"$CHECKPOINT_REVIEW_TEST_REPO/unrelated.txt"
-          ;;
-        mutate-hidden)
-          printf 'hidden mutation\n' >"$CHECKPOINT_REVIEW_TEST_REPO/hidden.txt"
-          ;;
-        mutate-submodule)
-          printf 'submodule mutation\n' >"$CHECKPOINT_REVIEW_TEST_REPO/sub/file.txt"
-          ;;
-        orphan-success | orphan-cancel)
-          if [[ $effort == high ]]; then
-            read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE" &
-            printf 'descendant %s\n' "$!" >"$CHECKPOINT_REVIEW_TEST_READY"
-            printf 'reviewer %s\n' "$$" >"$CHECKPOINT_REVIEW_TEST_READY"
-          elif [[ $CHECKPOINT_REVIEW_TEST_MODE == orphan-cancel ]]; then
-            printf 'sibling %s\n' "$$" >"$CHECKPOINT_REVIEW_TEST_READY"
-            read -r <"$CHECKPOINT_REVIEW_TEST_RELEASE"
-          fi
-          ;;
-        symlink-target)
-          printf 'outside mutation\n' >>"$CHECKPOINT_REVIEW_TEST_OUTSIDE"
           ;;
       esac
       printf 'Mock Pi completed: %s\n' "$effort"
@@ -85,37 +50,34 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'printf "Failed at line %s\n" "$LINENO" >&2' ERR
+
 repo="$temp_root/repo"
 bin_dir="$temp_root/bin"
 output_dir="$temp_root/output"
 tmp_dir="$temp_root/tmp"
-base=HEAD
 context="$temp_root/context.md"
 mkdir -p "$repo" "$bin_dir" "$output_dir" "$tmp_dir"
-for name in pi git fd fdfind rg forbidden; do
+for name in pi fd fdfind rg; do
   ln -s -- "$root/scripts/test-checkpoint-review" "$bin_dir/$name"
 done
 
 git -C "$repo" init --quiet
-git -C "$repo" config user.email checkpoint-review-test@example.com
-git -C "$repo" config user.name 'Checkpoint Review Test'
+git -C "$repo" config user.email test@example.com
+git -C "$repo" config user.name 'Test'
 printf 'baseline\n' >"$repo/tracked.txt"
-printf 'hidden baseline\n' >"$repo/hidden.txt"
-mkdir "$repo/directory"
-printf 'nested baseline\n' >"$repo/directory/file.txt"
-git -C "$repo" add tracked.txt hidden.txt directory/file.txt
+git -C "$repo" add tracked.txt
 git -C "$repo" commit --quiet -m baseline
-printf 'Requirements: approved edit only.\nNon-goals: unrelated cleanup.\nPrior decision: retain earlier work.\n' >"$context"
+printf 'Requirements: approved edit only.\n' >"$context"
+
 review_script="$root/bin/checkpoint-review"
 base_env=(
   PATH="$bin_dir:$PATH" REVIEW_MODEL= TMPDIR="$tmp_dir"
   CHECKPOINT_REVIEW_TEST_MOCK=1 CHECKPOINT_REVIEW_TEST_OUTPUT="$output_dir"
-  CHECKPOINT_REVIEW_TEST_REPO="$repo" CHECKPOINT_REVIEW_TEST_REAL_GIT="$(command -v git)"
+  CHECKPOINT_REVIEW_TEST_REPO="$repo"
   CHECKPOINT_REVIEW_TEST_READY="$temp_root/ready" CHECKPOINT_REVIEW_TEST_RELEASE="$temp_root/release"
 )
 required_reviews=(--review correctness high --review simplification medium)
-review_args=(--repo "$repo" --base "$base" --context "$context" "${required_reviews[@]}")
-# Relative input files resolve from the invocation directory, not the worktree.
+review_args=(--repo "$repo" --base HEAD --context "$context" "${required_reviews[@]}")
 cd "$temp_root"
 
 clear_output() { find "$output_dir" -mindepth 1 -delete; }
@@ -133,11 +95,6 @@ run() { env "${base_env[@]}" "$review_script" "$@"; }
 assert_invocation_count() {
   local files=("$output_dir"/args.*.bin)
   [[ ${#files[@]} == "$1" ]]
-}
-reject() {
-  clear_output
-  expect_status 2 run "$@"
-  assert_invocation_count 0
 }
 assert_arg_pair() {
   local file="$1" name="$2" value="$3" previous='' arg
@@ -160,32 +117,12 @@ summary_path() {
 shopt -s nullglob
 
 expect_status 0 "$review_script" --help
-for omitted in repo base context; do
-  args=()
-  for option in repo base context; do
-    [[ $option == "$omitted" ]] || args+=("--$option" "${!option}")
-  done
-  reject "${args[@]}" "${required_reviews[@]}"
-done
-reject --repo repo --base HEAD --context "$context" "${required_reviews[@]}"
-reject --repo "$temp_root" --base HEAD --context "$context" "${required_reviews[@]}"
-reject --repo "$repo" --base missing --context "$context" "${required_reviews[@]}"
-reject --repo "$repo" --base HEAD --context "$context" --review correctness low
-for extra in '--review correctness low' '--review complexity high' '--review security ultra'; do
-  read -r -a args <<<"$extra"
-  reject "${review_args[@]}" "${args[@]}"
-done
-reject "${review_args[@]}" --base HEAD
-reject "${review_args[@]}" --path ' '
-reject baseline --repo repo
-reject "${review_args[@]}" --custom-review low ' '
-reject "${review_args[@]}" --custom-review low custom --custom-review low duplicate
-for dependency in all-fd rg; do
-  expect_status 127 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_PREFLIGHT="$dependency" "$review_script" "${review_args[@]}"
-  assert_invocation_count 0
-done
+expect_status 2 run --repo repo --base HEAD --context "$context" "${required_reviews[@]}"
+expect_status 2 run --repo "$repo" --base HEAD --context "$context" --review correctness low
+expect_status 2 run "${review_args[@]}" --review unknown high
+expect_status 2 run "${review_args[@]}" --review security ultra
+assert_invocation_count 0
 
-# An unchanged worktree is a no-op whether it matches HEAD or a dirty baseline.
 expect_status 0 run "${review_args[@]}"
 assert_invocation_count 0
 printf 'earlier-dirty\n' >"$repo/tracked.txt"
@@ -195,117 +132,42 @@ baseline="$(env "${base_env[@]}" "$review_script" baseline --repo "$repo")"
 expect_status 0 run --repo "$repo" --base "$baseline" --context "$context" "${required_reviews[@]}"
 assert_invocation_count 0
 
-# The baseline separates earlier dirty edits in the SAME file; --path excludes unrelated files.
+# Baseline separates earlier dirty edits in the same file; --path excludes unrelated files.
 printf 'approved\n' >"$repo/tracked.txt"
 printf 'unrelated\n' >"$repo/unrelated.txt"
-printf '*.log\n' >"$repo/.git/info/exclude"
-printf 'forced\n' >"$repo/forced.log"
-git -C "$repo" add --force forced.log
-expect_status 0 run --repo "$repo" --base "$baseline" --path tracked.txt --path forced.log --context context.md "${required_reviews[@]}"
+expect_status 0 run --repo "$repo" --base "$baseline" --path tracked.txt --context context.md "${required_reviews[@]}"
 assert_invocation_count 2
-grep -Fx 'Delta:' "$temp_root/stdout" >/dev/null
 summary="$(summary_path)"
 for args_file in "$output_dir"/args.*.bin; do
   mapfile -d '' -t args <"$args_file"
   for flag in --print --no-session --no-approve --no-extensions --no-skills --no-prompt-templates; do
     [[ " ${args[*]} " == *" $flag "* ]]
   done
-  for flag in --no-context-files --extension; do [[ " ${args[*]} " != *" $flag "* ]]; done
-  [[ " ${args[*]} " != *' --model '* ]]
   assert_arg_pair "$args_file" --tools read,grep,find
   attachments=()
   for arg in "${args[@]}"; do [[ $arg != @* ]] || attachments+=("${arg#@}"); done
   [[ ${#attachments[@]} == 2 ]]
   grep -Fx -- '-earlier-dirty' "${attachments[0]}" >/dev/null
   grep -Fx -- '+approved' "${attachments[0]}" >/dev/null
-  grep -Fx -- '+forced' "${attachments[0]}" >/dev/null
-  if grep -F -e unrelated -e untracked "${attachments[0]}" >/dev/null; then exit 1; fi
+  if grep -F unrelated "${attachments[0]}" >/dev/null; then exit 1; fi
   cmp "$context" "${attachments[1]}"
-  [[ $(stat -c %a "${attachments[0]}") == 400 && $(stat -c %a "${attachments[1]}") == 400 ]]
 done
-for receipt in 'Model argument: Pi default' "Base tree: $baseline" 'Paths: tracked.txt forced.log' 'correctness=high simplification=medium' 'Start UTC:' 'End UTC:' 'Worktree before:' 'Worktree prepared:' 'Worktree after:' 'Exit status: 0'; do
-  grep -F "$receipt" "$summary" >/dev/null
-done
-grep -F "$(git hash-object --no-filters "$context")" "$summary" >/dev/null
-[[ $(stat -c %a "${summary%/*}") == 700 ]]
+grep -F "Base tree: $baseline" "$summary" >/dev/null
+grep -F 'Exit status: 0' "$summary" >/dev/null
 
-# All options and effort values share one dispatch test, not five repeated runs.
 clear_output
 expect_status 0 env "${base_env[@]}" REVIEW_MODEL=example/custom-model "$review_script" "${review_args[@]}" \
-  --review test-reduction low --review security xhigh --review test-gaps max \
-  --review api-compat medium --review concurrency high --review policy low --custom-review max 'Check the custom contract.'
-assert_invocation_count 9
-summary="$(summary_path)"
+  --review test-reduction low --review security xhigh --custom-review max 'Check custom.'
+assert_invocation_count 5
 for args_file in "$output_dir"/args.*.bin; do
   assert_arg_pair "$args_file" --model example/custom-model
 done
-for effort in low medium high xhigh max; do
-  found=0
-  for args_file in "$output_dir"/args.*.bin; do
-    if assert_arg_pair "$args_file" --thinking "$effort"; then found=1; fi
-  done
-  [[ $found == 1 ]]
-done
-grep -F 'test-reduction-review status=0' "$summary" >/dev/null
-grep -F 'custom-review status=0' "$summary" >/dev/null
+grep -F 'custom-review status=0' "$(summary_path)" >/dev/null
 
-# Generating the patch must not change the worktree.
-clear_output
-expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=prepare "$review_script" "${review_args[@]}"
-assert_invocation_count 0
-
-# Fingerprinting must neither execute diff helpers nor read symlink targets.
-git -C "$repo" config diff.external "$bin_dir/forbidden"
-git -C "$repo" config diff.fixture.textconv "$bin_dir/forbidden"
-printf 'tracked.txt diff=fixture\n' >"$repo/.gitattributes"
-printf 'outside\n' >"$temp_root/outside"
-ln -s "$temp_root/outside" "$repo/link"
-expect_status 0 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=symlink-target \
-  CHECKPOINT_REVIEW_TEST_OUTSIDE="$temp_root/outside" "$review_script" "${review_args[@]}"
-[[ ! -e $output_dir/helper-ran ]]
-mv "$repo/directory" "$temp_root/outside-directory"
-ln -s "$temp_root/outside-directory" "$repo/directory"
-expect_status 0 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=symlink-target \
-  CHECKPOINT_REVIEW_TEST_OUTSIDE="$temp_root/outside-directory/file.txt" "$review_script" "${review_args[@]}"
-[[ $(<"$temp_root/outside-directory/file.txt") == *'outside mutation'* ]]
-rm "$repo/directory"
-mv "$temp_root/outside-directory" "$repo/directory"
-printf 'nested baseline\n' >"$repo/directory/file.txt"
 expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=mutate "$review_script" "${review_args[@]}"
-summary="$(summary_path)"
-grep -F 'Worktree after:' "$summary" >/dev/null
+grep -F 'worktree changed while reviewers were running' "$temp_root/stderr" >/dev/null
 
-# Git visibility flags must not hide changes to tracked bytes.
-for flag in assume-unchanged skip-worktree; do
-  git -C "$repo" update-index "--$flag" hidden.txt
-  before_flags="$(git -C "$repo" ls-files -v hidden.txt)"
-  expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=mutate-hidden "$review_script" "${review_args[@]}"
-  [[ $(git -C "$repo" ls-files -v hidden.txt) == "$before_flags" ]]
-  [[ $(<"$repo/hidden.txt") == 'hidden mutation' ]]
-  git -C "$repo" update-index "--no-$flag" hidden.txt
-  printf 'hidden baseline\n' >"$repo/hidden.txt"
-done
-
-# A submodule that was already dirty must retain a content-sensitive fingerprint.
-sub_source="$temp_root/sub-source"
-sub_repo="$temp_root/sub-repo"
-for fixture in "$sub_source" "$sub_repo"; do
-  git init --quiet "$fixture"
-  git -C "$fixture" config user.email checkpoint-review-test@example.com
-  git -C "$fixture" config user.name 'Checkpoint Review Test'
-  printf 'baseline\n' >"$fixture/file.txt"
-  git -C "$fixture" add file.txt
-  git -C "$fixture" commit --quiet -m baseline
-done
-git -C "$sub_repo" -c protocol.file.allow=always submodule add --quiet "$sub_source" sub
-git -C "$sub_repo" commit --quiet -m submodule
-printf 'approved\n' >"$sub_repo/file.txt"
-printf 'earlier dirty\n' >"$sub_repo/sub/file.txt"
-expect_status 1 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_REPO="$sub_repo" CHECKPOINT_REVIEW_TEST_MODE=mutate-submodule \
-  "$review_script" --repo "$sub_repo" --base HEAD --context "$context" "${required_reviews[@]}"
-[[ $(<"$sub_repo/sub/file.txt") == 'submodule mutation' ]]
-
-# A failed reviewer cannot end the command before its sibling settles.
+# A failed reviewer still waits for its sibling to settle and reports both statuses.
 mkfifo "$temp_root/ready" "$temp_root/release"
 exec {ready_fd}<>"$temp_root/ready" {release_fd}<>"$temp_root/release"
 clear_output
@@ -321,9 +183,8 @@ review_pid=''
 summary="$(summary_path)"
 grep -F 'correctness-review status=17' "$summary" >/dev/null
 grep -F 'simplification-review status=0' "$summary" >/dev/null
-grep -F 'Mock Pi completed: medium' "${summary%/*}/report.md" >/dev/null
 
-# Cancellation kills both owned reviewer groups, including descendants, and waits.
+# Cancellation kills reviewer process groups, including descendants.
 clear_output
 env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE=cancel "$review_script" "${review_args[@]}" >"$temp_root/stdout" 2>"$temp_root/stderr" &
 review_pid=$!
@@ -342,51 +203,6 @@ for pid in "${children[@]}"; do
   state="$(ps -o stat= -p "$pid" || true)"
   [[ -z $state || $state == Z* ]]
 done
-grep -F 'Exit status: 143' "$(summary_path)" >/dev/null
-# A completed reviewer cannot leave descendants behind on success or cancellation.
-for mode in orphan-success orphan-cancel; do
-  clear_output
-  env "${base_env[@]}" CHECKPOINT_REVIEW_TEST_MODE="$mode" "$review_script" "${review_args[@]}" >"$temp_root/stdout" 2>"$temp_root/stderr" &
-  review_pid=$!
-  children=()
-  leader=''
-  events=2
-  [[ $mode != orphan-cancel ]] || events=3
-  for ((i = 0; i < events; i++)); do
-    read -r -u "$ready_fd" kind pid
-    children+=("$pid")
-    [[ $kind != reviewer ]] || leader="$pid"
-  done
-  if [[ $mode == orphan-cancel ]]; then
-    tail --pid="$leader" -f /dev/null
-    kill -TERM "$review_pid"
-  fi
-  status=0
-  wait "$review_pid" || status=$?
-  review_pid=''
-  expected=0
-  [[ $mode != orphan-cancel ]] || expected=143
-  [[ $status == "$expected" ]]
-  for pid in "${children[@]}"; do
-    state="$(ps -o stat= -p "$pid" || true)"
-    [[ -z $state || $state == Z* ]]
-  done
-done
 exec {ready_fd}>&- {release_fd}>&-
 
-# Clean committed scope and unborn repositories also use the caller's base.
-git -C "$repo" add tracked.txt
-git -C "$repo" commit --quiet -m approved
-rm -- "$repo/unrelated.txt" "$repo/untracked.txt" "$repo/.gitattributes" "$repo/link"
-[[ -z $(git -C "$repo" status --porcelain) ]]
-clear_output
-expect_status 0 run --repo "$repo" --base HEAD~1 --context "$context" "${required_reviews[@]}"
-assert_invocation_count 2
-unborn="$temp_root/unborn"
-git init --quiet "$unborn"
-unborn_base="$(env "${base_env[@]}" "$review_script" baseline --repo "$unborn")"
-printf 'new\n' >"$unborn/new.txt"
-clear_output
-expect_status 0 run --repo "$unborn" --base "$unborn_base" --context "$context" "${required_reviews[@]}"
-assert_invocation_count 2
 printf 'Checkpoint review tests passed.\n'

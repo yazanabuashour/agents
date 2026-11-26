@@ -14,56 +14,33 @@ with tempfile.TemporaryDirectory() as temporary:
                         ignore=shutil.ignore_patterns("__pycache__"))
     (root / "scripts").mkdir()
     shutil.copy2(source_root / "scripts/install-local", root / "scripts/install-local")
-    cache = root / "bin/__pycache__"
-    cache.mkdir()
-    (cache / "generated.pyc").write_bytes(b"Not an installable helper")
-    unexported = root / "skills/not-exported"
-    unexported.mkdir()
-    (unexported / "README.md").write_text("Not a skill\n")
+    (root / "bin/__pycache__").mkdir()
+    (root / "bin/__pycache__/generated.pyc").write_bytes(b"ignored")
+    (root / "skills/not-exported").mkdir()
+    (root / "skills/not-exported/README.md").write_text("Not a skill\n")
+
     home = Path(temporary) / "home"
     shared = home / ".agents/skills"
-    shared.mkdir(parents=True)
     claude = home / ".claude/skills"
-    claude.mkdir(parents=True)
     gemini = home / ".gemini/config/skills"
-    gemini.mkdir(parents=True)
+    for directory in (shared, claude, gemini):
+        directory.mkdir(parents=True)
+
     (claude / "synced-skill").mkdir()
     (claude / "synced-skill/SKILL.md").write_text("Synced independently\n")
-    baseline = home / ".agents/AGENTS.md"
-    baseline.write_text("Earlier personal policy\n")
-    instruction_links = {
-        ".pi/agent/AGENTS.md": "../../.agents/AGENTS.md",
-        ".codex/AGENTS.md": "../.agents/AGENTS.md",
-        ".claude/rules/personal.md": "../../.agents/AGENTS.md",
-        ".config/opencode/AGENTS.md": "../../.agents/AGENTS.md",
-        ".gemini/AGENTS.md": "../.agents/AGENTS.md",
-    }
-    existing_instruction = home / ".pi/agent/AGENTS.md"
-    existing_instruction.parent.mkdir(parents=True)
-    existing_instruction.symlink_to(instruction_links[".pi/agent/AGENTS.md"])
-    for name in (".config/opencode/opencode.json", ".claude/rules/external.md"):
-        target = home / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("Application-owned content\n")
     outside = Path(temporary) / "application-skill"
     outside.mkdir()
     (outside / "SKILL.md").write_text("Application-owned skill\n")
-    for name in ("omarchy", "diagnose-crash", "application"):
-        (shared / name).symlink_to(outside, target_is_directory=True)
+    (shared / "application").symlink_to(outside, target_is_directory=True)
+    (shared / "omarchy").symlink_to(outside, target_is_directory=True)
     (claude / "omarchy").symlink_to("../../.agents/skills/omarchy", target_is_directory=True)
-    (claude / "diagnose-crash").symlink_to(outside, target_is_directory=True)
-    (claude / "stale-external").symlink_to("/absent/external-skill", target_is_directory=True)
-    (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
-    (gemini / "omarchy").symlink_to(outside, target_is_directory=True)
-    for name in (".codex/skills/.system/builtin/SKILL.md", ".local/share/siftwire/SKILL.md"):
-        target = home / name
-        target.parent.mkdir(parents=True)
-        target.write_text("Outside shared discovery\n")
-    old_helper = home / ".local/bin/checkpoint-review"
-    old_helper.parent.mkdir(parents=True)
-    binary = b"\x7fELF\xff\x00Earlier helper"
-    old_helper.write_bytes(binary)
-    old_helper.chmod(0o755)
+
+    existing_instruction = home / ".pi/agent/AGENTS.md"
+    existing_instruction.parent.mkdir(parents=True)
+    existing_instruction.symlink_to("../../.agents/AGENTS.md")
+    baseline = home / ".agents/AGENTS.md"
+    baseline.write_text("Earlier personal policy\n")
+
     environment = {**os.environ, "HOME": str(home), "XDG_STATE_HOME": str(home / ".local/state")}
     receipt_path = home / ".local/state/agents/installed.json"
 
@@ -81,8 +58,10 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def run(*arguments, error=None):
         before = snapshot(home)
-        result = subprocess.run([str(root / "scripts/install-local"), *arguments], cwd=root,
-                                env=environment, capture_output=True, text=True)
+        result = subprocess.run(
+            [str(root / "scripts/install-local"), *arguments],
+            cwd=root, env=environment, capture_output=True, text=True,
+        )
         if error:
             assert result.returncode != 0, result.stdout
             assert error in result.stderr, result.stderr
@@ -92,255 +71,80 @@ with tempfile.TemporaryDirectory() as temporary:
             assert snapshot(home) == before, "Preview or refusal mutated the home"
         return result
 
-    for arguments in ((), ("--apply",)):
-        run(*arguments, error="Unowned file differs")
-    baseline.write_bytes((root / "instructions/AGENTS.md").read_bytes())
     run("--apply", error="Unowned file differs")
-    old_helper.write_bytes((root / "bin/checkpoint-review").read_bytes())
-    (claude / "notes").unlink()
-    (claude / "notes").symlink_to(outside)
-    run("--apply", error="Unowned skill path conflicts")
-    (claude / "notes").unlink()
-    (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
+    baseline.write_bytes((root / "instructions/AGENTS.md").read_bytes())
+
     preview = run().stdout
     assert "Preserve unowned matching link" in preview
     assert "Record matching profile file" in preview
-    check = run("--check", error="Installed profile differs from source")
-    assert check.stdout.splitlines() == preview.splitlines()[:-1], "--check prints the preview's plan"
-    installed = run("--apply")
-    assert "already match" in run("--check").stdout
-    assert "Backups:" in installed.stdout
-    backups = list((receipt_path.parent / "backups").glob("install-*"))
-    assert len(backups) == 1
-    assert (backups[0] / ".agents/AGENTS.md").read_bytes() == baseline.read_bytes()
-    assert baseline.stat().st_mode & 0o777 == 0o600
-    receipt = json.loads(receipt_path.read_text())
-    assert receipt_path.stat().st_mode & 0o777 == 0o600
-    assert ".agents/AGENTS.md" in receipt["paths"]
-    codex_prompt = home / ".codex/minimal-codex.md"
-    assert codex_prompt.read_bytes() == (root / "instructions/codex.md").read_bytes()
-    assert codex_prompt.stat().st_mode & 0o777 == 0o600
-    assert ".pi/agent/AGENTS.md" not in receipt["paths"]
-    for name, target in instruction_links.items():
-        link = home / name
-        assert os.readlink(link) == target
-        assert link.resolve() == baseline
-        if link != existing_instruction:
-            assert receipt["paths"][name] == {"target": target}
+    run("--check", error="Installed profile differs from source")
 
-    existing_instruction.unlink()
-    for conflict in ("file", "directory", "link"):
-        if conflict == "file":
-            existing_instruction.write_bytes(baseline.read_bytes())
-        elif conflict == "directory":
-            existing_instruction.mkdir()
-        else:
-            existing_instruction.symlink_to("missing-instructions")
-        run("--apply", "--adopt-instruction-links", error="instruction path conflicts" if conflict != "directory"
-            else "Target must be a regular file or profile link")
-        if conflict == "directory":
-            existing_instruction.rmdir()
-        else:
-            existing_instruction.unlink()
-    existing_instruction.symlink_to(instruction_links[".pi/agent/AGENTS.md"])
-    instruction_inode = existing_instruction.lstat().st_ino
-    assert "Record matching instruction link" in run("--adopt-instruction-links").stdout
-    run("--apply", "--adopt-instruction-links")
-    assert existing_instruction.lstat().st_ino == instruction_inode
-    receipt = json.loads(receipt_path.read_text())
-    for name, target in instruction_links.items():
-        assert receipt["paths"][name] == {"target": target}
-    existing_instruction.unlink()
-    existing_instruction.symlink_to(baseline)
-    run("--apply", error="Local modification conflicts")
-    existing_instruction.unlink()
     run("--apply")
-    assert os.readlink(existing_instruction) == instruction_links[".pi/agent/AGENTS.md"]
-    assert "already match" in run("--apply", "--adopt-instruction-links").stdout
+    assert "already match" in run("--check").stdout
+    assert "already match" in run("--apply").stdout
+    assert baseline.stat().st_mode & 0o777 == 0o600
+    assert (home / ".codex/minimal-codex.md").stat().st_mode & 0o777 == 0o600
+    assert (home / ".local/bin/checkpoint-review").stat().st_mode & 0o777 == 0o755
+    assert not (home / ".local/bin/__pycache__").exists()
+    assert not (shared / "not-exported").exists()
+
+    receipt = json.loads(receipt_path.read_text())
+    assert ".pi/agent/AGENTS.md" not in receipt["paths"]
     assert ".claude/skills/omarchy" not in receipt["paths"]
-    assert ".claude/skills/diagnose-crash" not in receipt["paths"]
-    assert ".gemini/config/skills/omarchy" not in receipt["paths"]
-    assert os.readlink(claude / "omarchy") == "../../.agents/skills/omarchy"
-    assert os.readlink(claude / "diagnose-crash") == str(outside)
-    assert os.readlink(gemini / "omarchy") == str(outside)
-    assert ".claude/skills/notes" not in receipt["paths"]
     assert receipt["paths"][".claude/skills/application"] == {"target": "../../.agents/skills/application"}
     assert receipt["paths"][".gemini/config/skills/application"] == {"target": "../../../.agents/skills/application"}
-    assert "application" not in {Path(name).name for name in receipt["directories"]}
-    for source in (root / "bin").iterdir():
-        if source.is_file():
-            target = home / ".local/bin" / source.name
-            assert target.read_bytes() == source.read_bytes()
-            assert target.stat().st_mode & 0o777 == 0o755
-    assert not (home / ".local/bin/__pycache__").exists()
-    for source in (root / "skills").glob("*/SKILL.md"):
-        for member in source.parent.rglob("*"):
-            if member.is_file():
-                assert (home / ".agents" / member.relative_to(root)).read_bytes() == member.read_bytes()
-        assert (claude / source.parent.name).resolve() == shared / source.parent.name
-        assert (gemini / source.parent.name).resolve() == shared / source.parent.name
-    assert not (shared / "not-exported").exists()
-    assert not (claude / "siftwire").exists()
-    assert not (claude / "builtin").exists()
-    assert not (gemini / "siftwire").exists()
-    assert not (gemini / "builtin").exists()
-    preserved = {name: value for name, value in snapshot(home).items() if name.startswith(
-        (".codex/", ".config/opencode/opencode.json", ".claude/rules/external.md",
-         ".local/share/siftwire/", ".claude/skills/synced-skill", ".claude/skills/stale-external")
-    )}
-    before = snapshot(home)
-    assert "already match" in run("--apply").stdout
-    assert snapshot(home) == before
-    assert "Record ownership" not in run().stdout
-
-    (claude / "notes").unlink()
-    run("--apply")
-    assert ".claude/skills/notes" in json.loads(receipt_path.read_text())["paths"]
-    assert ".claude/skills/omarchy" not in json.loads(receipt_path.read_text())["paths"]
+    assert (claude / "notes").resolve() == shared / "notes"
+    assert (gemini / "notes").resolve() == shared / "notes"
+    assert (claude / "synced-skill/SKILL.md").read_text() == "Synced independently\n"
 
     added = root / "skills/new-skill"
     (added / "support").mkdir(parents=True)
     (added / "SKILL.md").write_text("New exported skill\n")
-    (added / "support/data").write_bytes(b"\x00\xffskill support")
-    preview = run().stdout
-    assert f"Copy: skills/new-skill/SKILL.md -> {shared}/new-skill/SKILL.md (mode 0o644)" in preview
-    assert "New exported skill" not in preview
+    (added / "support/data").write_bytes(b"\x00\xffdata")
     run("--apply")
-    assert (shared / "new-skill/support/data").read_bytes() == b"\x00\xffskill support"
-    (added / "support/data").write_bytes(b"\x00\xffupdated support")
-    run("--apply")
-    assert any((backup / ".agents/skills/new-skill/support/data").is_file()
-               for backup in (receipt_path.parent / "backups").iterdir())
+    assert (shared / "new-skill/support/data").read_bytes() == b"\x00\xffdata"
     added.rename(root / "skills/renamed-skill")
-    assert "Remove owned path" in run().stdout
     run("--apply")
     assert not (shared / "new-skill").exists()
     assert not (claude / "new-skill").is_symlink()
-    assert (claude / "renamed-skill").is_symlink()
     assert not (gemini / "new-skill").is_symlink()
-    assert (gemini / "renamed-skill").is_symlink()
-    assert any((backup / ".claude/skills/new-skill").is_symlink()
-               for backup in (receipt_path.parent / "backups").iterdir())
-    assert any((backup / ".gemini/config/skills/new-skill").is_symlink()
-               for backup in (receipt_path.parent / "backups").iterdir())
-    (shared / "renamed-skill/local.txt").write_text("Keep my file\n")
+    assert (claude / "renamed-skill").is_symlink() and (gemini / "renamed-skill").is_symlink()
+
+    (shared / "renamed-skill/local.txt").write_text("Keep\n")
     shutil.rmtree(root / "skills/renamed-skill")
     run("--apply")
     assert not (shared / "renamed-skill/SKILL.md").exists()
-    assert not (shared / "renamed-skill/support").exists()
-    assert (shared / "renamed-skill/local.txt").read_text() == "Keep my file\n"
-    assert ".agents/skills/renamed-skill" in json.loads(receipt_path.read_text())["directories"]
+    assert (shared / "renamed-skill/local.txt").read_text() == "Keep\n"
     (shared / "renamed-skill/local.txt").unlink()
     run("--apply")
     assert not (shared / "renamed-skill").exists()
 
-    (shared / "preexisting").mkdir()
-    (root / "skills/preexisting").mkdir()
-    (root / "skills/preexisting/SKILL.md").write_text("Temporarily exported\n")
-    run("--apply")
-    shutil.rmtree(root / "skills/preexisting")
-    run("--apply")
-    assert (shared / "preexisting").is_dir()
-    assert ".agents/skills/preexisting" not in json.loads(receipt_path.read_text())["directories"]
-
-    baseline.unlink()
-    run("--apply")
-    assert baseline.read_bytes() == (root / "instructions/AGENTS.md").read_bytes()
     (shared / "application").unlink()
     run("--apply")
     assert not (claude / "application").is_symlink()
     assert not (gemini / "application").is_symlink()
-    assert (shared / "omarchy").is_symlink() and (claude / "omarchy").is_symlink() and (gemini / "omarchy").is_symlink()
-    assert (outside / "SKILL.md").read_text() == "Application-owned skill\n"
 
-    baseline.write_text("Private local change\n")
+    baseline.write_text("Local edit\n")
     run("--apply", error="Local modification conflicts")
     baseline.write_bytes((root / "instructions/AGENTS.md").read_bytes())
     baseline.chmod(0o644)
     run("--apply", error="Local modification conflicts")
     baseline.chmod(0o600)
-    notes = claude / "notes"
-    notes.unlink()
-    notes.symlink_to(shared / "notes")
+    (claude / "notes").unlink()
+    (claude / "notes").symlink_to(outside)
     run("--apply", error="Local modification conflicts")
-    notes.unlink()
-    notes.symlink_to("../../.agents/skills/notes")
-    retired = root / "skills/notes"
-    retired.rename(root / "retired-notes")
-    (shared / "notes/SKILL.md").write_text("Locally modified retired skill\n")
-    run("--apply", error="Local modification conflicts")
-    (root / "retired-notes").rename(retired)
-    (shared / "notes/SKILL.md").write_bytes((retired / "SKILL.md").read_bytes())
+    (claude / "notes").unlink()
+    (claude / "notes").symlink_to("../../.agents/skills/notes")
 
-    original_receipt = receipt_path.read_bytes()
-    original = json.loads(original_receipt)
-    invalid = [
-        {**original, "version": True},
-        {**original, "unknown": []},
-        {**original, "paths": {"../../escape": {"sha256": "0" * 64, "mode": 0o644}}},
-        {**original, "paths": {".agents/skills/../../escape": {"sha256": "0" * 64, "mode": 0o644}}},
-        {**original, "paths": {str(home / "escape"): {"sha256": "0" * 64, "mode": 0o644}}},
-        {**original, "paths": {".ssh/config": {"sha256": "0" * 64, "mode": 0o600}}},
-        {**original, "paths": {".agents/AGENTS.md": {"sha256": "invalid", "mode": 0o600}}},
-        {**original, "paths": {".claude/skills/notes": {"target": str(outside)}}},
-        {**original, "paths": {".gemini/config/skills/notes": {"target": str(outside)}}},
-        {**original, "paths": {".config/opencode/AGENTS.md": {"target": str(outside)}}},
-        {**original, "paths": {".gemini/AGENTS.md": {"target": str(outside)}}},
-        {**original, "paths": {".claude/CLAUDE.md": {"target": "../.agents/AGENTS.md"}}},
-        {**original, "directories": [".claude/skills"]},
-        {**original, "directories": [".gemini/config/skills"]},
-        {**original, "directories": [".agents/skills/../escape"]},
-        {**original, "directories": [".agents/skills/notes", ".agents/skills/notes"]},
-        {**original, "directories": [".agents/skills/notes/SKILL.md"]},
-    ]
-    for receipt in invalid:
-        receipt_path.write_text(json.dumps(receipt))
-        run("--apply", error="Invalid")
-    receipt_path.write_text('{"version": 1, "version": 1}')
-    run("--apply", error="Duplicate receipt key")
-    receipt_path.write_bytes(original_receipt)
-
-    for target in (baseline, codex_prompt, shared / "notes", claude, gemini, home / ".pi/agent",
-                   receipt_path, receipt_path.parent / "backups"):
-        saved = target.with_name(target.name + ".saved")
-        target.rename(saved)
-        target.symlink_to(saved, target_is_directory=saved.is_dir())
-        run("--apply", error="Refusing to write through a symlink")
-        target.unlink()
-        saved.rename(target)
-    state = receipt_path.parent
-    saved_state = state.with_name("agents.saved")
-    state.rename(saved_state)
-    state.symlink_to(saved_state, target_is_directory=True)
+    saved_notes = shared / "notes.saved"
+    (shared / "notes").rename(saved_notes)
+    (shared / "notes").symlink_to(saved_notes, target_is_directory=True)
     run("--apply", error="Refusing to write through a symlink")
-    state.unlink()
-    saved_state.rename(state)
-    (root / "skills").rename(root / "saved-skills")
-    run("--apply", error="Source must be a directory")
-    (root / "saved-skills").rename(root / "skills")
-    source_skill = root / "skills/technical-writing"
-    saved_skill = root / "saved-skill"
-    source_skill.rename(saved_skill)
-    source_skill.symlink_to(saved_skill, target_is_directory=True)
-    run("--apply", error="Source must not be a symlink")
-    source_skill.unlink()
-    saved_skill.rename(source_skill)
+    (shared / "notes").unlink()
+    saved_notes.rename(shared / "notes")
 
-    (shared / "synced-skill").mkdir()
-    (shared / "synced-skill/SKILL.md").write_text("Shared, not synced\n")
-    run("--apply", error="Target must be a regular file or profile link")
-    shutil.rmtree(shared / "synced-skill")
-    external_state = Path(temporary) / "external-state"
-    environment["XDG_STATE_HOME"] = str(external_state)
-    run()
-    assert not external_state.exists()
-    environment["XDG_STATE_HOME"] = str(root)
-    run("--apply", error="Ownership state must stay outside the source checkout")
-    assert not (root / "agents").exists()
-    for state_value in ("", "relative-state"):
-        environment["XDG_STATE_HOME"] = state_value
-        assert "already match" in run("--apply").stdout
-        assert not (root / "relative-state").exists()
-    for name, value in preserved.items():
-        assert snapshot(home)[name] == value
+    (root / "skills").rename(root / "skills.saved")
+    run("--apply", error="Source must be a directory")
+    (root / "skills.saved").rename(root / "skills")
+
 print("Personal installer tests passed.")

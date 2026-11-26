@@ -73,8 +73,7 @@ wait for the result. Do not poll in a loop or use bare sleeps to wait.
 
 Read every file printed as `Review report:`; the completion message can be
 truncated. Exit zero means reviewers completed, not that findings are absent
-or correct. Keep the report and input/model/timing receipt with dispositions.
-Do not treat missing token or cost accounting as zero.
+or correct. Keep the report and summary with dispositions.
 
 Address findings within scope; unrelated findings do not authorize edits.
 For test cuts, identify where meaningful input, timing, origin, side-effect,

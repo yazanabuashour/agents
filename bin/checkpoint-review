@@ -22,7 +22,8 @@ usage() {
     'Required review types: correctness, simplification' \
     'Optional review types: test-reduction, security, test-gaps, api-compat, concurrency, policy' \
     'Request test-reduction only when the approved delta changes tests.' \
-    'Valid efforts: low, medium, high, xhigh (extra high), max'
+    'Valid efforts: low, medium, high, xhigh (extra high), max' \
+    'Requires: git, pi, rg, fd (or fdfind), setsid'
 }
 
 error() {
@@ -42,18 +43,25 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   exit 0
 fi
 
-# Prints the tree of the worktree at $1: the real index's paths plus untracked files, all with worktree contents.
+# Prints the tree of the worktree at $1: tracked paths plus untracked files, with current worktree contents.
 snapshot_tree() {
   local index_dir status=0
   index_dir="$(mktemp -d "${TMPDIR:-/tmp}/checkpoint-review-index.XXXXXX")"
   {
-    # Paths only: index flags such as skip-worktree must not hide worktree contents.
     git -C "$1" ls-files --stage -z | GIT_INDEX_FILE="$index_dir/index" git -C "$1" update-index -z --index-info &&
       GIT_INDEX_FILE="$index_dir/index" git -C "$1" -c advice.addEmbeddedRepo=false add --all -- . &&
       GIT_INDEX_FILE="$index_dir/index" git -C "$1" write-tree
   } || status=$?
   rm -rf -- "$index_dir"
   return "$status"
+}
+
+submodule_trees() {
+  local sub
+  # shellcheck disable=SC2016
+  while IFS= read -r sub; do
+    [[ -z $sub ]] || printf '%s %s\n' "$sub" "$(snapshot_tree "$1/$sub")"
+  done < <(git -C "$1" submodule --quiet foreach --recursive 'printf "%s\n" "$displaypath"' 2>/dev/null || true)
 }
 
 if [[ ${1:-} == baseline ]]; then
@@ -115,26 +123,14 @@ done
 [[ -f ${inputs[context]} && -r ${inputs[context]} ]] || error '--context must be a readable file'
 [[ ${inputs[context]} == /* ]] || inputs[context]="$PWD/${inputs[context]}"
 
-for dependency in git pi setsid; do
+for dependency in git pi setsid rg; do
   if ! command -v "$dependency" >/dev/null 2>&1; then
     printf 'error: %s is required\n' "$dependency" >&2
     exit 127
   fi
 done
-usable_fd=0
-for fd_command in fd fdfind; do
-  if command -v "$fd_command" >/dev/null 2>&1 &&
-    "$fd_command" --max-results 1 -- '' >/dev/null 2>&1; then
-    usable_fd=1
-    break
-  fi
-done
-if [[ $usable_fd != 1 ]]; then
-  printf 'error: a usable fd or fdfind is required\n' >&2
-  exit 127
-fi
-if ! command -v rg >/dev/null 2>&1 || ! rg --version >/dev/null 2>&1; then
-  printf 'error: a usable rg is required\n' >&2
+if ! command -v fd >/dev/null 2>&1 && ! command -v fdfind >/dev/null 2>&1; then
+  printf 'error: fd or fdfind is required\n' >&2
   exit 127
 fi
 
@@ -147,18 +143,14 @@ summary_file="$review_dir/summary.txt"
 report_file="$review_dir/report.md"
 patch_file="$review_dir/approved.patch"
 context_file="$review_dir/task-context.md"
-pids=() names=() logs=() statuses=() result_files=()
+pids=() names=() logs=() statuses=()
 failed=0
 
 settle_reviews() {
-  local i result
+  local i
   for i in "${!pids[@]}"; do
     if [[ ! ${statuses[$i]+set} ]]; then
       if wait "${pids[$i]}"; then statuses[i]=0; else statuses[i]=$?; fi
-      if [[ -f ${result_files[$i]} ]] && read -r result <"${result_files[$i]}" &&
-        [[ $result =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((result <= 255)); then
-        statuses[i]="$result"
-      fi
     fi
     if [[ ${statuses[$i]} != 0 ]]; then failed=1; fi
   done
@@ -168,7 +160,6 @@ finish() {
   local status="$?" pid i
   [[ $# == 0 ]] || status="$1"
   trap - INT TERM HUP EXIT
-  # Completed supervisors have already killed their groups; never signal reused PIDs.
   local live_pids=()
   mapfile -t live_pids < <(
     jobs -pr
@@ -192,66 +183,24 @@ trap 'finish 130' INT
 trap 'finish 143' TERM
 trap 'finish 129' HUP
 
-worktree_snapshot() {
-  local root="$1" path target nested_root ancestor remaining
-  git -C "$root" rev-parse --verify --quiet HEAD || [[ $? == 1 ]]
-  git -C "$root" ls-files --stage -z
-  git -C "$root" ls-files -v -z
-  git -C "$root" ls-files --cached --others --exclude-standard -z |
-    while IFS= read -r -d '' path; do
-      printf 'path:%s\0' "$path"
-      ancestor="$root"
-      remaining="$path"
-      while [[ $remaining == */* ]]; do
-        ancestor+="/${remaining%%/*}"
-        remaining="${remaining#*/}"
-        if [[ -L $ancestor ]]; then
-          printf 'symlink-ancestor:%s\0' "$ancestor"
-          readlink -z -- "$ancestor"
-          continue 2
-        fi
-      done
-      target="$root/$path"
-      if [[ -e $target || -L $target ]]; then
-        stat -c '%f' -- "$target"
-      else
-        printf 'missing\n'
-      fi
-      if [[ -L $target ]]; then
-        readlink -z -- "$target"
-      elif [[ -f $target ]]; then
-        git hash-object --no-filters -- "$target"
-      elif [[ -d $target && -e $target/.git ]]; then
-        nested_root="$(git -C "$target" rev-parse --show-toplevel)"
-        [[ $nested_root != "$(cd "$target" && pwd -P)" ]] || worktree_snapshot "$nested_root"
-      fi
-    done
-}
-
-worktree_hash() {
-  worktree_snapshot "$repo_root" | git hash-object --stdin
-}
-
 {
   printf 'Repository: %s\nStart UTC: %s\n' "$repo_root" "$(date -u +%FT%TZ)"
   printf 'Review output: %s\nReview report: %s\n' "$review_dir" "$report_file"
   printf 'Requested reviews:'
   for review_type in "${reviews[@]}"; do printf ' %s=%s' "$review_type" "${efforts[$review_type]}"; done
-  printf '\nUsage and cost: unavailable (text mode); historical usage: unavailable, not zero\n'
+  printf '\n'
 } >"$summary_file"
 printf 'Repository: %s\nReview output: %s\n' "$repo_root" "$review_dir"
-review_state_hash="$(worktree_hash)"
+
 current_tree="$(snapshot_tree "$repo_root")"
+before_submodules="$(submodule_trees "$repo_root")"
 diff_args=(--no-ext-diff --no-textconv --no-color --ignore-submodules=none --submodule=short --src-prefix=a/ --dst-prefix=b/ "$base_tree" "$current_tree" -- "${paths[@]}")
 git diff --binary "${diff_args[@]}" >"$patch_file"
 cp -- "${inputs[context]}" "$context_file"
 chmod 400 "$patch_file" "$context_file"
-patch_hash="$(git hash-object --no-filters -- "$patch_file")"
-context_hash="$(git hash-object --no-filters -- "$context_file")"
 printf 'Base tree: %s\nCurrent tree: %s\nPaths:' "$base_tree" "$current_tree" >>"$summary_file"
 if [[ ${#paths[@]} == 0 ]]; then printf ' (all)' >>"$summary_file"; else printf ' %q' "${paths[@]}" >>"$summary_file"; fi
-printf '\nGit object hashes (%s):\nPatch: %s\nContext: %s\nWorktree before: %s\n' \
-  "$(git rev-parse --show-object-format)" "$patch_hash" "$context_hash" "$review_state_hash" >>"$summary_file"
+printf '\n' >>"$summary_file"
 printf 'Delta:\n'
 git diff --stat=200 "${diff_args[@]}"
 
@@ -260,12 +209,6 @@ model_summary='Pi default'
 [[ -z ${REVIEW_MODEL:-} ]] || model_args=(--model "$REVIEW_MODEL") model_summary="$REVIEW_MODEL"
 [[ -s $patch_file ]] || model_summary='not requested (empty delta)'
 printf 'Model argument: %s\n' "$model_summary" >>"$summary_file"
-prepared_state_hash="$(worktree_hash)"
-printf 'Worktree prepared: %s\n' "$prepared_state_hash" >>"$summary_file"
-if [[ $prepared_state_hash != "$review_state_hash" ]]; then
-  printf 'error: worktree changed while preparing reviewer context; rerun\n' >&2
-  exit 1
-fi
 if [[ ! -s $patch_file ]]; then
   printf 'Empty delta; no review checkpoint was run.\n' | tee "$report_file"
   exit 0
@@ -286,18 +229,7 @@ declare -A prompts=(
 
 run_pi() {
   trap - INT TERM HUP EXIT
-  # shellcheck disable=SC2016
-  exec setsid bash --noprofile --norc -c '
-    set +m
-    result_file="$1"
-    shift
-    status=0
-    pi "$@" || status=$?
-    printf "%s\n" "$status" >"$result_file.tmp" && mv -- "$result_file.tmp" "$result_file"
-    # Retain the group leader until every owned group member receives cleanup.
-    kill -KILL -- "-$$"
-  ' checkpoint-review-supervisor "$3" \
-    --print --no-session "${model_args[@]}" --thinking "$1" \
+  exec setsid pi --print --no-session "${model_args[@]}" --thinking "$1" \
     --no-approve --no-extensions --no-skills --no-prompt-templates --tools read,grep,find \
     "@$patch_file" "@$context_file" "$2"
 }
@@ -306,9 +238,8 @@ for review_type in "${reviews[@]}"; do
   [[ $review_type != test-gaps ]] || name=test-gap-review
   log="$review_dir/$name.log"
   prompt="$review_prefix ${prompts[$review_type]}"
-  result_file="$review_dir/$name.status"
-  run_pi "${efforts[$review_type]}" "$prompt" "$result_file" </dev/null >"$log" 2>&1 &
-  pids+=("$!") names+=("$name") logs+=("$log") result_files+=("$result_file")
+  run_pi "${efforts[$review_type]}" "$prompt" </dev/null >"$log" 2>&1 &
+  pids+=("$!") names+=("$name") logs+=("$log")
 done
 settle_reviews
 
@@ -325,14 +256,8 @@ for i in "${!pids[@]}"; do
   } >>"$report_file"
 done
 cat "$report_file"
-final_state_hash="$(worktree_hash)"
-printf 'Worktree after: %s\n' "$final_state_hash" >>"$summary_file"
-if [[ $final_state_hash != "$review_state_hash" ]]; then
+if [[ $(snapshot_tree "$repo_root") != "$current_tree" || $(submodule_trees "$repo_root") != "$before_submodules" ]]; then
   printf 'error: worktree changed while reviewers were running; rerun\n' >&2
-  failed=1
-fi
-if [[ $(git hash-object --no-filters -- "$patch_file") != "$patch_hash" || $(git hash-object --no-filters -- "$context_file") != "$context_hash" ]]; then
-  printf 'error: frozen review inputs changed\n' >&2
   failed=1
 fi
 printf 'Review report: %s\nReview metadata: %s\n' "$report_file" "$summary_file"

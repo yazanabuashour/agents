@@ -10,9 +10,9 @@
   discover exports and compatibility skill links without manual skill lists.
   Dotfiles owns machine preferences and explicit new-machine orchestration,
   not profile content, instruction links, or skill installation.
-- Follow [development checks](docs/development.md) and the
-  [installation preview](docs/install.md). Verify installed copies without
-  reloading existing sessions.
+- Run `scripts/check` and preview installation with `scripts/install-local`
+  (see [README.md](README.md)). Verify installed copies without reloading
+  existing sessions.
 - Preserve skill attribution and declared invocation policies across supported
   agents. Technical writing is eligible for automatic use; keep unrelated
   manual-only skills manual-only. Skill descriptions state only when to use them.
