@@ -21,14 +21,16 @@ machine settings. Upstream tools own their CLI guides and implementations.
 
 The repository's root `AGENTS.md` governs work on this checkout; it is not the
 exported baseline. The installer owns profile copies, harness instruction links,
-and individual Claude skill compatibility links, not whole harness directories or
+and individual compatibility skill links, not whole harness directories or
 runtime configuration.
 Application-owned skills keep their original installers and version requirements.
 See [installation and ownership migration](install.md) for receipt and conflict handling.
 
-Pi, Codex, and OpenCode discover `~/.agents/skills` directly. Claude Code uses
-per-skill links in `~/.claude/skills`, reconciled from the installed shared collection
-by `scripts/install-local`; update the shared file, not a harness copy.
+Pi, Codex, and OpenCode discover `~/.agents/skills` directly. Claude Code and
+Antigravity use per-skill compatibility links reconciled from the installed
+shared collection by `scripts/install-local` (see
+[Connect your agents](install.md#connect-your-agents)); update the shared file,
+not a harness copy.
 Install a skill only for a task that people start by name or that any session
 may need. When only a person should start it, set `disable-model-invocation: true`
 and, for Codex, `policy.allow_implicit_invocation: false` in `agents/openai.yaml`;
@@ -43,6 +45,7 @@ You can invoke technical writing directly:
 | Pi | `/skill:technical-writing` |
 | Codex | `$technical-writing` |
 | Claude Code | `/technical-writing` |
+| Antigravity | `/technical-writing` |
 
 Skill visibility is not an access boundary. Instructions do not grant permission,
 provide missing tools, or enforce model behavior.

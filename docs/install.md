@@ -34,9 +34,9 @@ The installer discovers exports through `skills/*/SKILL.md`, copies the baseline
 and exported skill files into `~/.agents`, installs the Codex base prompt into
 `~/.codex/minimal-codex.md`, and installs helpers into `~/.local/bin`.
 It connects supported harnesses to the baseline through instruction links and
-creates individual Claude compatibility links for skills in the resulting
-`~/.agents/skills` collection, including application-owned shared skills. It does
-not replace `~/.claude/skills` or change application-owned skill content.
+creates individual compatibility skill links for the resulting `~/.agents/skills`
+collection, including application-owned shared skills, without replacing harness
+skill directories or changing application-owned skill content.
 Read [workflow dependencies](reference.md) before invoking a skill.
 
 Ownership lives in `$XDG_STATE_HOME/agents/installed.json`, defaulting to
@@ -63,8 +63,9 @@ file differs, save it and reconcile it against the source, then move it aside or
 make it match before retrying. The installer does not overwrite it or treat a
 backup as permission to discard edits.
 
-Matching preexisting Claude skill links remain untouched and **unowned**, even
-when they point at a profile export. To transfer links from another installer:
+Matching preexisting compatibility skill links (for Claude Code or Antigravity)
+remain untouched and **unowned**, even when they point at a profile export. To
+transfer links from another installer:
 
 1. Retire that installer's skill-link declarations without removing instruction
    loading links or application-owned entries.
@@ -91,7 +92,7 @@ Adoption records matching links in the ownership receipt without replacing them.
 It requires the exact relative targets listed below. Without the flag, matching
 preexisting instruction links remain untouched and unowned. A regular file,
 directory, or different link target blocks the plan; save and reconcile it before
-retrying. The flag never adopts Claude skill links or grants
+retrying. The flag never adopts compatibility skill links or grants
 permission to overwrite instructions. Matching regular profile files, including
 the Codex base prompt, follow the file migration rules above.
 
@@ -105,6 +106,7 @@ The installer creates these links at each harness's default user location:
 | Codex | `~/.codex/AGENTS.md` | `../.agents/AGENTS.md` |
 | Claude Code | `~/.claude/rules/personal.md` | `../../.agents/AGENTS.md` |
 | [OpenCode v2](https://opencode.ai/v2/docs/instructions/) | `~/.config/opencode/AGENTS.md` | `../../.agents/AGENTS.md` |
+| Antigravity | `~/.gemini/AGENTS.md` | `../.agents/AGENTS.md` |
 
 Custom harness homes are not configured by this installer. Machine preferences,
 models, permissions, extensions, credentials, and sessions remain outside this
@@ -112,8 +114,9 @@ profile. The optional Codex `model_instructions_file` setting can select the
 installed `~/.codex/minimal-codex.md`; the installer does not change that setting.
 
 Pi, Codex, and OpenCode discover `~/.agents/skills` directly. Claude Code uses the
-installer's individual links in `~/.claude/skills`; preserve its own entries and
-synced directories. Keep application-owned shared skills linked to their owners,
+installer's individual links in `~/.claude/skills` and Antigravity uses individual
+links in `~/.gemini/config/skills`; preserve their own entries and synced
+directories. Keep application-owned shared skills linked to their owners,
 Codex builtins in their native location, and invocation-scoped skills such as
 SiftWire outside global discovery. Do not copy skill content into harness-specific
 directories.
@@ -122,7 +125,10 @@ Claude Code reads repository `AGENTS.md` natively when its
 [project-instruction settings](https://code.claude.com/docs/en/memory#agents-md)
 allow it. The user rule supplies the global personal baseline because
 Claude does not discover instructions under `~/.agents`. No `CLAUDE.md` alias is
-needed. Use a Claude Code version with native `AGENTS.md` support.
+needed. Use a Claude Code version with native `AGENTS.md` support. Antigravity
+reads repository `AGENTS.md` natively from the workspace up to the repository root
+and loads `~/.gemini/AGENTS.md` globally in both the standalone CLI and T3 Code's
+ACP provider.
 
 Start new sessions and confirm that the personal baseline, repository instructions,
 and intended skills load. Technical writing is eligible for automatic use; see

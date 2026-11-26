@@ -7,7 +7,7 @@
   Leave machine settings, credentials, sessions, and application-owned skills
   with their owners.
 - Keep profile installation and harness instruction wiring in `scripts/install-local`:
-  discover exports and Claude compatibility links without manual skill lists.
+  discover exports and compatibility skill links without manual skill lists.
   Dotfiles owns machine preferences and explicit new-machine orchestration,
   not profile content, instruction links, or skill installation.
 - Follow [development checks](docs/development.md) and the

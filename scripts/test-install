@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory() as temporary:
     shared.mkdir(parents=True)
     claude = home / ".claude/skills"
     claude.mkdir(parents=True)
+    gemini = home / ".gemini/config/skills"
+    gemini.mkdir(parents=True)
     (claude / "synced-skill").mkdir()
     (claude / "synced-skill/SKILL.md").write_text("Synced independently\n")
     baseline = home / ".agents/AGENTS.md"
@@ -34,6 +36,7 @@ with tempfile.TemporaryDirectory() as temporary:
         ".codex/AGENTS.md": "../.agents/AGENTS.md",
         ".claude/rules/personal.md": "../../.agents/AGENTS.md",
         ".config/opencode/AGENTS.md": "../../.agents/AGENTS.md",
+        ".gemini/AGENTS.md": "../.agents/AGENTS.md",
     }
     existing_instruction = home / ".pi/agent/AGENTS.md"
     existing_instruction.parent.mkdir(parents=True)
@@ -51,6 +54,7 @@ with tempfile.TemporaryDirectory() as temporary:
     (claude / "diagnose-crash").symlink_to(outside, target_is_directory=True)
     (claude / "stale-external").symlink_to("/absent/external-skill", target_is_directory=True)
     (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
+    (gemini / "omarchy").symlink_to(outside, target_is_directory=True)
     for name in (".codex/skills/.system/builtin/SKILL.md", ".local/share/siftwire/SKILL.md"):
         target = home / name
         target.parent.mkdir(parents=True)
@@ -95,7 +99,7 @@ with tempfile.TemporaryDirectory() as temporary:
     old_helper.write_bytes((root / "bin/checkpoint-review").read_bytes())
     (claude / "notes").unlink()
     (claude / "notes").symlink_to(outside)
-    run("--apply", error="Unowned Claude skill path conflicts")
+    run("--apply", error="Unowned skill path conflicts")
     (claude / "notes").unlink()
     (claude / "notes").symlink_to(shared / "notes", target_is_directory=True)
     preview = run().stdout
@@ -155,10 +159,13 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "already match" in run("--apply", "--adopt-instruction-links").stdout
     assert ".claude/skills/omarchy" not in receipt["paths"]
     assert ".claude/skills/diagnose-crash" not in receipt["paths"]
+    assert ".gemini/config/skills/omarchy" not in receipt["paths"]
     assert os.readlink(claude / "omarchy") == "../../.agents/skills/omarchy"
     assert os.readlink(claude / "diagnose-crash") == str(outside)
+    assert os.readlink(gemini / "omarchy") == str(outside)
     assert ".claude/skills/notes" not in receipt["paths"]
     assert receipt["paths"][".claude/skills/application"] == {"target": "../../.agents/skills/application"}
+    assert receipt["paths"][".gemini/config/skills/application"] == {"target": "../../../.agents/skills/application"}
     assert "application" not in {Path(name).name for name in receipt["directories"]}
     for source in (root / "bin").iterdir():
         if source.is_file():
@@ -171,9 +178,12 @@ with tempfile.TemporaryDirectory() as temporary:
             if member.is_file():
                 assert (home / ".agents" / member.relative_to(root)).read_bytes() == member.read_bytes()
         assert (claude / source.parent.name).resolve() == shared / source.parent.name
+        assert (gemini / source.parent.name).resolve() == shared / source.parent.name
     assert not (shared / "not-exported").exists()
     assert not (claude / "siftwire").exists()
     assert not (claude / "builtin").exists()
+    assert not (gemini / "siftwire").exists()
+    assert not (gemini / "builtin").exists()
     preserved = {name: value for name, value in snapshot(home).items() if name.startswith(
         (".codex/", ".config/opencode/opencode.json", ".claude/rules/external.md",
          ".local/share/siftwire/", ".claude/skills/synced-skill", ".claude/skills/stale-external")
@@ -207,7 +217,11 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not (shared / "new-skill").exists()
     assert not (claude / "new-skill").is_symlink()
     assert (claude / "renamed-skill").is_symlink()
+    assert not (gemini / "new-skill").is_symlink()
+    assert (gemini / "renamed-skill").is_symlink()
     assert any((backup / ".claude/skills/new-skill").is_symlink()
+               for backup in (receipt_path.parent / "backups").iterdir())
+    assert any((backup / ".gemini/config/skills/new-skill").is_symlink()
                for backup in (receipt_path.parent / "backups").iterdir())
     (shared / "renamed-skill/local.txt").write_text("Keep my file\n")
     shutil.rmtree(root / "skills/renamed-skill")
@@ -235,7 +249,8 @@ with tempfile.TemporaryDirectory() as temporary:
     (shared / "application").unlink()
     run("--apply")
     assert not (claude / "application").is_symlink()
-    assert (shared / "omarchy").is_symlink() and (claude / "omarchy").is_symlink()
+    assert not (gemini / "application").is_symlink()
+    assert (shared / "omarchy").is_symlink() and (claude / "omarchy").is_symlink() and (gemini / "omarchy").is_symlink()
     assert (outside / "SKILL.md").read_text() == "Application-owned skill\n"
 
     baseline.write_text("Private local change\n")
@@ -268,9 +283,12 @@ with tempfile.TemporaryDirectory() as temporary:
         {**original, "paths": {".ssh/config": {"sha256": "0" * 64, "mode": 0o600}}},
         {**original, "paths": {".agents/AGENTS.md": {"sha256": "invalid", "mode": 0o600}}},
         {**original, "paths": {".claude/skills/notes": {"target": str(outside)}}},
+        {**original, "paths": {".gemini/config/skills/notes": {"target": str(outside)}}},
         {**original, "paths": {".config/opencode/AGENTS.md": {"target": str(outside)}}},
+        {**original, "paths": {".gemini/AGENTS.md": {"target": str(outside)}}},
         {**original, "paths": {".claude/CLAUDE.md": {"target": "../.agents/AGENTS.md"}}},
         {**original, "directories": [".claude/skills"]},
+        {**original, "directories": [".gemini/config/skills"]},
         {**original, "directories": [".agents/skills/../escape"]},
         {**original, "directories": [".agents/skills/notes", ".agents/skills/notes"]},
         {**original, "directories": [".agents/skills/notes/SKILL.md"]},
@@ -282,7 +300,7 @@ with tempfile.TemporaryDirectory() as temporary:
     run("--apply", error="Duplicate receipt key")
     receipt_path.write_bytes(original_receipt)
 
-    for target in (baseline, codex_prompt, shared / "notes", claude, home / ".pi/agent",
+    for target in (baseline, codex_prompt, shared / "notes", claude, gemini, home / ".pi/agent",
                    receipt_path, receipt_path.parent / "backups"):
         saved = target.with_name(target.name + ".saved")
         target.rename(saved)

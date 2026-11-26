@@ -1,7 +1,7 @@
 # agents
 
-Personal instructions and skills for Pi, Codex, Claude Code, and OpenCode, with
-a checkpoint review helper. Review and adapt this
+Personal instructions and skills for Pi, Codex, Claude Code, OpenCode, and
+Antigravity, with a checkpoint review helper. Review and adapt this
 profile before installing it; it is not a universal development policy.
 
 The profile does not install agents or tools, configure accounts, or manage
